@@ -1,6 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, DateTime, Date, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -9,7 +8,7 @@ from database import Base
 class Personnel(Base):
     __tablename__ = "personnel"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     nom = Column(String(150), nullable=False)
     role = Column(String(20), nullable=False)
     specialite = Column(String(150))
@@ -28,7 +27,7 @@ class Personnel(Base):
 class Patient(Base):
     __tablename__ = "patient"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     nom = Column(String(150), nullable=False)
     prenom = Column(String(150), nullable=False)
     date_naissance = Column(Date, nullable=True)
@@ -50,10 +49,11 @@ class Patient(Base):
 class Consultation(Base):
     __tablename__ = "consultation"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    patient_id = Column(UUID(as_uuid=True), ForeignKey("patient.id"), nullable=False)
-    medecin_id = Column(UUID(as_uuid=True), ForeignKey("personnel.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    patient_id = Column(String(36), ForeignKey("patient.id"), nullable=False)
+    medecin_id = Column(String(36), ForeignKey("personnel.id"), nullable=False)
     date = Column(DateTime(timezone=True), server_default=func.now())
+    lieu = Column(String(20), nullable=False, default="Cabinet")
     motif = Column(String(255), nullable=True)
     diagnostic = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
@@ -71,9 +71,9 @@ class Consultation(Base):
 class RendezVous(Base):
     __tablename__ = "rendezvous"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    patient_id = Column(UUID(as_uuid=True), ForeignKey("patient.id"), nullable=False)
-    medecin_id = Column(UUID(as_uuid=True), ForeignKey("personnel.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    patient_id = Column(String(36), ForeignKey("patient.id"), nullable=False)
+    medecin_id = Column(String(36), ForeignKey("personnel.id"), nullable=False)
     date_heure = Column(DateTime, nullable=False)
     statut = Column(String(30), nullable=False, default="confirme")
     motif = Column(String(255), nullable=True)
@@ -90,10 +90,10 @@ class RendezVous(Base):
 class Ordonnance(Base):
     __tablename__ = "ordonnance"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    consultation_id = Column(UUID(as_uuid=True), ForeignKey("consultation.id"), nullable=False)
-    patient_id = Column(UUID(as_uuid=True), ForeignKey("patient.id"), nullable=False)
-    medecin_id = Column(UUID(as_uuid=True), ForeignKey("personnel.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    consultation_id = Column(String(36), ForeignKey("consultation.id"), nullable=False)
+    patient_id = Column(String(36), ForeignKey("patient.id"), nullable=False)
+    medecin_id = Column(String(36), ForeignKey("personnel.id"), nullable=False)
     date_emission = Column(Date, nullable=False, server_default=func.current_date())
     instructions_generales = Column(Text, nullable=True)
 
@@ -109,8 +109,8 @@ class Ordonnance(Base):
 class LignePrescription(Base):
     __tablename__ = "ligneprescription"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ordonnance_id = Column(UUID(as_uuid=True), ForeignKey("ordonnance.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    ordonnance_id = Column(String(36), ForeignKey("ordonnance.id"), nullable=False)
     medicament = Column(String(150), nullable=False)
     dosage = Column(String(100), nullable=True)
     frequence = Column(String(100), nullable=True)

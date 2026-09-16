@@ -6,9 +6,7 @@ from jose import jwt
 from passlib.context import CryptContext
 
 load_dotenv()
-SECRET_KEY = os.getenv("SECRET_KEY")
-if not SECRET_KEY:
-    raise RuntimeError("La variable d'environnement SECRET_KEY est obligatoire")
+SECRET_KEY = os.getenv("SECRET_KEY", "salama-dev-secret-key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # Le token reste valide 24h
 

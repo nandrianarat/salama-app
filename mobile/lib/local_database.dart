@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
@@ -14,7 +15,7 @@ class LocalDatabase {
     final path = join(await getDatabasesPath(), 'salama.db');
     _database = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
       },
@@ -51,6 +52,7 @@ class LocalDatabase {
           CREATE TABLE consultations (
             id TEXT PRIMARY KEY, patient_id TEXT NOT NULL,
             medecin_id TEXT, date TEXT NOT NULL, motif TEXT NOT NULL,
+            lieu TEXT NOT NULL DEFAULT 'Cabinet',
             diagnostic TEXT, notes TEXT,
             sync_status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -167,6 +169,11 @@ class LocalDatabase {
             )
           ''');
         }
+        if (oldVersion < 3) {
+          await database.execute(
+            "ALTER TABLE consultations ADD COLUMN lieu TEXT NOT NULL DEFAULT 'Cabinet'",
+          );
+        }
       },
     );
     return _database!;
@@ -219,6 +226,9 @@ class LocalDatabase {
       'medecin_id': null,
       'date': consultation['date'] ?? DateTime.now().toIso8601String(),
       'motif': consultation['motif'] ?? '',
+      'lieu':
+          consultation['lieu'] ??
+          _consultationLocationFromNotes(consultation['notes']),
       'diagnostic': consultation['diagnostic'],
       'notes': consultation['notes'],
       'sync_status': consultation['sync_status'] ?? 'synced',
@@ -229,6 +239,11 @@ class LocalDatabase {
       'is_deleted': consultation['is_deleted'] == true ? 1 : 0,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
+
+  String _consultationLocationFromNotes(Object? notes) =>
+      notes?.toString().startsWith('Lieu: Domicile') == true
+      ? 'Domicile'
+      : 'Cabinet';
 
   Future<List<Map<String, dynamic>>> getConsultations() async {
     final database = await this.database;
@@ -315,7 +330,8 @@ class LocalDatabase {
           'dosage': line['dosage'],
           'frequence': line['frequence'],
           'duree': line['duree'],
-          'sync_status': line['sync_status'] ?? ordonnance['sync_status'] ?? 'pending',
+          'sync_status':
+              line['sync_status'] ?? ordonnance['sync_status'] ?? 'pending',
           'created_at': line['created_at'] ?? ordonnance['created_at'],
           'updated_at': line['updated_at'] ?? ordonnance['updated_at'],
           'is_deleted': line['is_deleted'] == true ? 1 : 0,
@@ -349,6 +365,14 @@ class LocalDatabase {
     return database.query('pending_operations', orderBy: 'id ASC');
   }
 
+  Future<int> getPendingOperationCount() async {
+    final database = await this.database;
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS total FROM pending_operations',
+    );
+    return (result.first['total'] as int?) ?? 0;
+  }
+
   Future<int> addPendingOperation({
     required String entity,
     required String entityId,
@@ -373,45 +397,46 @@ class LocalDatabase {
       whereArgs: [id],
     );
   }
+
   Future<void> debugDatabase() async {
-  final database = await this.database;
+    final database = await this.database;
 
-  final patients = await database.query('patients');
-  final consultations = await database.query('consultations');
-  final rendezVous = await database.query('rendez_vous');
-  final ordonnances = await database.query('ordonnances');
-  final pendingOperations = await database.query(
-    'pending_operations',
-    orderBy: 'id ASC',
-  );
+    final patients = await database.query('patients');
+    final consultations = await database.query('consultations');
+    final rendezVous = await database.query('rendez_vous');
+    final ordonnances = await database.query('ordonnances');
+    final pendingOperations = await database.query(
+      'pending_operations',
+      orderBy: 'id ASC',
+    );
 
-  print('========== BASE LOCALE ==========');
+    developer.log('========== BASE LOCALE ==========');
 
-  print('--- PATIENTS (${patients.length}) ---');
-  for (final patient in patients) {
-    print(patient);
+    developer.log('--- PATIENTS (${patients.length}) ---');
+    for (final patient in patients) {
+      developer.log(patient.toString());
+    }
+
+    developer.log('--- CONSULTATIONS (${consultations.length}) ---');
+    for (final consultation in consultations) {
+      developer.log(consultation.toString());
+    }
+
+    developer.log('--- RENDEZ-VOUS (${rendezVous.length}) ---');
+    for (final rendezVousItem in rendezVous) {
+      developer.log(rendezVousItem.toString());
+    }
+
+    developer.log('--- ORDONNANCES (${ordonnances.length}) ---');
+    for (final ordonnance in ordonnances) {
+      developer.log(ordonnance.toString());
+    }
+
+    developer.log('--- PENDING OPERATIONS (${pendingOperations.length}) ---');
+    for (final operation in pendingOperations) {
+      developer.log(operation.toString());
+    }
+
+    developer.log('=================================');
   }
-
-  print('--- CONSULTATIONS (${consultations.length}) ---');
-  for (final consultation in consultations) {
-    print(consultation);
-  }
-
-  print('--- RENDEZ-VOUS (${rendezVous.length}) ---');
-  for (final rendezVousItem in rendezVous) {
-    print(rendezVousItem);
-  }
-
-  print('--- ORDONNANCES (${ordonnances.length}) ---');
-  for (final ordonnance in ordonnances) {
-    print(ordonnance);
-  }
-
-  print('--- PENDING OPERATIONS (${pendingOperations.length}) ---');
-  for (final operation in pendingOperations) {
-    print(operation);
-  }
-
-  print('=================================');
-}
 }

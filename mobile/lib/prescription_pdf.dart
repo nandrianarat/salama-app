@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:share_plus/share_plus.dart';
+import 'package:http/http.dart' as http;
 
 Future<String> exportPrescriptionPdf({
   required Map<String, dynamic> prescription,
@@ -34,7 +35,7 @@ Future<String> exportPrescriptionPdf({
                     fontWeight: pw.FontWeight.bold,
                   ),
                 ),
-                pw.Text('Centre de sante'),
+                pw.Text('Centre de santé'),
               ],
             ),
             pw.Column(
@@ -109,4 +110,23 @@ Future<void> sharePrescriptionPdf(String path) async {
   await SharePlus.instance.share(
     ShareParams(files: [XFile(path)], text: 'Ordonnance Salama'),
   );
+}
+
+Future<String> downloadPrescriptionPdf({
+  required String baseUrl,
+  required String token,
+  required String prescriptionId,
+}) async {
+  final response = await http.get(
+    Uri.parse('$baseUrl/api/v1/ordonnances/$prescriptionId/pdf'),
+    headers: {'Authorization': 'Bearer $token'},
+  );
+  if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+    throw Exception('Téléchargement impossible (${response.statusCode})');
+  }
+
+  final directory = await getApplicationDocumentsDirectory();
+  final file = File('${directory.path}/ordonnance_$prescriptionId.pdf');
+  await file.writeAsBytes(response.bodyBytes, flush: true);
+  return file.path;
 }

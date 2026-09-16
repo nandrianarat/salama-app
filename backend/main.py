@@ -8,16 +8,38 @@ from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from database import engine, get_db, Base, SessionLocal
 from models import Consultation, LignePrescription, Ordonnance, Patient, Personnel, RendezVous
 from auth import hash_password, verify_password, create_access_token, decode_access_token
+from dependencies import get_current_user, normalize_uuid
+from routers.auth import router as auth_router
+from schemas import PersonnelOut
 
 # Crée les tables si elles n'existent pas déjà (utile en développement)
 Base.metadata.create_all(bind=engine)
+
+
+def ensure_schema_updates():
+    inspector = inspect(engine)
+    if "consultation" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("consultation")}
+    if "lieu" in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE consultation ADD COLUMN lieu VARCHAR(20) "
+                "NOT NULL DEFAULT 'Cabinet'"
+            )
+        )
+
+
+ensure_schema_updates()
 
 
 def ensure_default_admin():
@@ -42,9 +64,21 @@ def ensure_default_admin():
 ensure_default_admin()
 
 app = FastAPI(title="Service Santé API")
+app.include_router(auth_router)
 
-# Indique à FastAPI où se trouve la route de connexion (pour la doc Swagger)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+@app.get("/api/v1/personnel", response_model=list[PersonnelOut])
+@app.get("/api/v1/users", response_model=list[PersonnelOut])
+def list_personnel(
+    role: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: Personnel = Depends(get_current_user),
+):
+    del current_user
+    query = db.query(Personnel).filter(Personnel.is_deleted == False)
+    if role:
+        query = query.filter(Personnel.role == role)
+    return query.order_by(Personnel.created_at.asc()).all()
 
 
 class PatientCreate(BaseModel):
@@ -108,6 +142,7 @@ class PatientOut(BaseModel):
 
 class ConsultationCreate(BaseModel):
     patient_id: UUID
+    lieu: Literal["Cabinet", "Domicile"] = "Cabinet"
     motif: str | None = None
     diagnostic: str | None = None
     notes: str | None = None
@@ -122,6 +157,7 @@ class ConsultationUpdate(BaseModel):
 class ConsultationSync(BaseModel):
     id: UUID
     patient_id: UUID
+    lieu: Literal["Cabinet", "Domicile"] = "Cabinet"
     motif: str | None = None
     diagnostic: str | None = None
     notes: str | None = None
@@ -136,6 +172,7 @@ class ConsultationOut(BaseModel):
     id: UUID
     patient_id: UUID
     medecin_id: UUID
+    lieu: str = "Cabinet"
     date: datetime | None = None
     motif: str | None = None
     diagnostic: str | None = None
@@ -231,48 +268,6 @@ class OrdonnanceOut(BaseModel):
 def health_check():
     return {"status": "ok"}
 
-
-@app.post("/api/v1/auth/login")
-@app.post("/auth/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(Personnel).filter(Personnel.login == form_data.username).first()
-
-    if not user or not verify_password(form_data.password, user.mot_de_passe_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identifiant ou mot de passe incorrect",
-        )
-
-    token = create_access_token({"sub": str(user.id), "role": user.role})
-    return {"access_token": token, "token_type": "bearer"}
-
-
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    try:
-        payload = decode_access_token(token)
-        user_id = payload.get("sub")
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token invalide ou expiré",
-        )
-
-    user = db.query(Personnel).filter(Personnel.id == user_id).first()
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utilisateur introuvable")
-    return user
-
-
-@app.get("/auth/me")
-@app.get("/api/v1/auth/me")
-def read_current_user(current_user: Personnel = Depends(get_current_user)):
-    return {
-        "id": str(current_user.id),
-        "nom": current_user.nom,
-        "role": current_user.role,
-    }
-
-
 @app.get("/api/v1/patients", response_model=list[PatientOut])
 def list_patients(
     db: Session = Depends(get_db),
@@ -292,12 +287,25 @@ def list_patients(
 
 
 @app.get("/api/v1/patients/{patient_id}", response_model=PatientOut)
+def ensure_schema_updates():
+    """Apply the small additive migrations used by the mobile client."""
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with engine.begin() as connection:
+        columns = connection.exec_driver_sql("PRAGMA table_info(consultation)").fetchall()
+        if columns and not any(column[1] == "lieu" for column in columns):
+            connection.exec_driver_sql(
+                "ALTER TABLE consultation ADD COLUMN lieu VARCHAR(20) NOT NULL DEFAULT 'Cabinet'"
+            )
+
+ensure_schema_updates()
 def get_patient(patient_id: UUID, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
     del current_user
     patient = db.query(Patient).filter(Patient.id == patient_id, Patient.is_deleted == False).first()
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient non trouvé")
     return patient
+    lieu: Literal["Cabinet", "Domicile"] = "Cabinet"
 
 
 @app.post("/api/v1/patients", response_model=PatientOut, status_code=status.HTTP_201_CREATED)
@@ -307,7 +315,10 @@ def create_patient(
     current_user: Personnel = Depends(get_current_user),
 ):
     del current_user
-    patient = Patient(**patient_data.model_dump())
+    payload = patient_data.model_dump()
+    if payload.get("id") is not None:
+        payload["id"] = normalize_uuid(payload["id"])
+    patient = Patient(**payload)
     db.add(patient)
     db.commit()
     db.refresh(patient)
@@ -321,16 +332,17 @@ def sync_patient(
     current_user: Personnel = Depends(get_current_user),
 ):
     del current_user
-    patient = db.query(Patient).filter(Patient.id == patient_data.id).first()
+    patient_id = normalize_uuid(patient_data.id)
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
     values = patient_data.model_dump(exclude={"id", "updated_at"})
     if patient is None:
-        patient = Patient(id=patient_data.id, **values)
+        patient = Patient(id=patient_id, **values)
         db.add(patient)
     else:
         server_updated = patient.updated_at
         client_updated = patient_data.updated_at
         if server_updated is not None and client_updated is not None and server_updated > client_updated:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflit de synchronisation")
+            return patient
         for field, value in values.items():
             setattr(patient, field, value)
     patient.sync_status = "synced"
@@ -400,8 +412,9 @@ def create_consultation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient introuvable")
 
     consultation = Consultation(
-        patient_id=consultation_data.patient_id,
-        medecin_id=current_user.id,
+        patient_id=normalize_uuid(consultation_data.patient_id),
+        medecin_id=normalize_uuid(current_user.id),
+        lieu=consultation_data.lieu,
         motif=consultation_data.motif,
         diagnostic=consultation_data.diagnostic,
         notes=consultation_data.notes,
@@ -418,19 +431,21 @@ def sync_consultation(
     db: Session = Depends(get_db),
     current_user: Personnel = Depends(get_current_user),
 ):
+    patient_id = normalize_uuid(consultation_data.patient_id)
     patient = db.query(Patient).filter(
-        Patient.id == consultation_data.patient_id,
+        Patient.id == patient_id,
         Patient.is_deleted == False,
     ).first()
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient introuvable")
-    consultation = db.query(Consultation).filter(Consultation.id == consultation_data.id).first()
+    consultation = db.query(Consultation).filter(Consultation.id == normalize_uuid(consultation_data.id)).first()
     if consultation is None:
         consultation = Consultation(
-            id=consultation_data.id,
-            patient_id=consultation_data.patient_id,
-            medecin_id=current_user.id,
+            id=normalize_uuid(consultation_data.id),
+            patient_id=patient_id,
+            medecin_id=normalize_uuid(current_user.id),
             date=consultation_data.date,
+            lieu=consultation_data.lieu,
             motif=consultation_data.motif,
             diagnostic=consultation_data.diagnostic,
             notes=consultation_data.notes,
@@ -438,10 +453,11 @@ def sync_consultation(
         db.add(consultation)
     else:
         if consultation.updated_at and consultation_data.updated_at and consultation.updated_at > consultation_data.updated_at:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflit de synchronisation")
+            return consultation
         for field, value in consultation_data.model_dump(exclude={"id", "updated_at", "patient_id"}).items():
             setattr(consultation, field, value)
-    consultation.patient_id = consultation_data.patient_id
+    consultation.patient_id = patient_id
+    consultation.lieu = consultation_data.lieu
     consultation.is_deleted = consultation_data.is_deleted
     consultation.sync_status = "synced"
     consultation.updated_at = datetime.utcnow()
@@ -520,8 +536,8 @@ def create_rendezvous(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient introuvable")
 
     rendezvous = RendezVous(
-        patient_id=rendezvous_data.patient_id,
-        medecin_id=current_user.id,
+        patient_id=normalize_uuid(rendezvous_data.patient_id),
+        medecin_id=normalize_uuid(current_user.id),
         date_heure=rendezvous_data.date_heure,
         statut=rendezvous_data.statut,
         motif=rendezvous_data.motif,
@@ -538,19 +554,20 @@ def sync_rendezvous(
     db: Session = Depends(get_db),
     current_user: Personnel = Depends(get_current_user),
 ):
+    patient_id = normalize_uuid(rendezvous_data.patient_id)
     patient = db.query(Patient).filter(
-        Patient.id == rendezvous_data.patient_id,
+        Patient.id == patient_id,
         Patient.is_deleted == False,
     ).first()
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient introuvable")
-    rendezvous = db.query(RendezVous).filter(RendezVous.id == rendezvous_data.id).first()
+    rendezvous = db.query(RendezVous).filter(RendezVous.id == normalize_uuid(rendezvous_data.id)).first()
     if rendezvous is None:
-        rendezvous = RendezVous(id=rendezvous_data.id, medecin_id=current_user.id)
+        rendezvous = RendezVous(id=normalize_uuid(rendezvous_data.id), medecin_id=normalize_uuid(current_user.id))
         db.add(rendezvous)
     elif rendezvous.updated_at and rendezvous_data.updated_at and rendezvous.updated_at > rendezvous_data.updated_at:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflit de synchronisation")
-    rendezvous.patient_id = rendezvous_data.patient_id
+        return rendezvous
+    rendezvous.patient_id = patient_id
     rendezvous.date_heure = rendezvous_data.date_heure
     rendezvous.statut = rendezvous_data.statut
     rendezvous.motif = rendezvous_data.motif
@@ -639,9 +656,9 @@ def create_ordonnance(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient introuvable")
 
     ordonnance = Ordonnance(
-        consultation_id=consultation.id,
-        patient_id=consultation.patient_id,
-        medecin_id=current_user.id,
+        consultation_id=normalize_uuid(consultation.id),
+        patient_id=normalize_uuid(consultation.patient_id),
+        medecin_id=normalize_uuid(current_user.id),
         date_emission=ordonnance_data.date_emission or date.today(),
         instructions_generales=ordonnance_data.instructions_generales,
         lignes=[LignePrescription(**ligne.model_dump()) for ligne in ordonnance_data.lignes],
@@ -658,20 +675,21 @@ def sync_ordonnance(
     db: Session = Depends(get_db),
     current_user: Personnel = Depends(get_current_user),
 ):
+    consultation_id = normalize_uuid(ordonnance_data.consultation_id)
     consultation = db.query(Consultation).filter(
-        Consultation.id == ordonnance_data.consultation_id,
+        Consultation.id == consultation_id,
         Consultation.is_deleted == False,
     ).first()
     if not consultation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consultation introuvable")
-    ordonnance = db.query(Ordonnance).filter(Ordonnance.id == ordonnance_data.id).first()
+    ordonnance = db.query(Ordonnance).filter(Ordonnance.id == normalize_uuid(ordonnance_data.id)).first()
     if ordonnance is None:
-        ordonnance = Ordonnance(id=ordonnance_data.id, medecin_id=current_user.id)
+        ordonnance = Ordonnance(id=normalize_uuid(ordonnance_data.id), medecin_id=normalize_uuid(current_user.id))
         db.add(ordonnance)
     elif ordonnance.updated_at and ordonnance_data.updated_at and ordonnance.updated_at > ordonnance_data.updated_at:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflit de synchronisation")
-    ordonnance.consultation_id = ordonnance_data.consultation_id
-    ordonnance.patient_id = consultation.patient_id
+        return ordonnance
+    ordonnance.consultation_id = consultation_id
+    ordonnance.patient_id = normalize_uuid(consultation.patient_id)
     ordonnance.date_emission = ordonnance_data.date_emission or date.today()
     ordonnance.instructions_generales = ordonnance_data.instructions_generales
     ordonnance.lignes = [LignePrescription(**ligne.model_dump()) for ligne in ordonnance_data.lignes]
