@@ -6,11 +6,13 @@ class HomePage extends StatefulWidget {
     required this.token,
     required this.role,
     required this.displayName,
+    this.patientId,
   });
 
   final String token;
   final String role;
   final String displayName;
+  final String? patientId;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -62,19 +64,44 @@ class _HomePageState extends State<HomePage> {
       return _AdminSnapshot(
         patients: _decode(responses[0]),
         appointments: _decode(responses[1]),
+        consultations: const [],
+        prescriptions: const [],
       );
     } catch (_) {
       return _AdminSnapshot(
-        patients: await LocalDatabase.instance.getPatients(),
-        appointments: await LocalDatabase.instance.getRendezVous(),
+        patients: await _loadLocalPatients(),
+        appointments: await _loadLocalAppointments(),
+        consultations: const [],
+        prescriptions: const [],
       );
     }
   }
 
-  List<Map<String, dynamic>> _decode(http.Response response) =>
-      (jsonDecode(response.body) as List<dynamic>)
-          .whereType<Map<String, dynamic>>()
-          .toList();
+  List<Map<String, dynamic>> _decode(http.Response response) {
+    final decoded = jsonDecode(response.body);
+    final values = decoded is Map<String, dynamic>
+        ? decoded['data'] ?? decoded['items'] ?? []
+        : decoded;
+    return values is List
+        ? values.whereType<Map<String, dynamic>>().toList()
+        : const <Map<String, dynamic>>[];
+  }
+
+  Future<List<Map<String, dynamic>>> _loadLocalPatients() async {
+    try {
+      return await LocalDatabase.instance.getPatients();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadLocalAppointments() async {
+    try {
+      return await LocalDatabase.instance.getRendezVous();
+    } catch (_) {
+      return const [];
+    }
+  }
 
   Future<void> _syncPendingData() async {
     if (_syncing || !await _isBackendReachable() || !mounted) return;
@@ -136,11 +163,21 @@ class _HomePageState extends State<HomePage> {
   Widget _content() {
     switch (_selectedIndex) {
       case 1:
-        return AppointmentsPage(token: widget.token);
+        return AppointmentsPage(
+          token: widget.token,
+          role: widget.role,
+          patientId: widget.patientId,
+        );
       case 2:
-        return _UsersPage(token: widget.token);
+        return _SettingsPage(token: widget.token);
       case 3:
-        return ConsultationsFeaturePage(token: widget.token);
+        return widget.role.toLowerCase() == 'admin' ||
+                widget.role.toLowerCase() == 'secretaire'
+            ? _SettingsPage(token: widget.token)
+            : ConsultationsFeaturePage(
+                token: widget.token,
+                canCreate: widget.role.toLowerCase() != 'patient',
+              );
       case 4:
         return _DoctorsPage(token: widget.token);
       case 5:
@@ -150,7 +187,15 @@ class _HomePageState extends State<HomePage> {
           role: widget.role,
         );
       case 6:
-        return PrescriptionsPage(token: widget.token, canCreate: false);
+        return widget.role.toLowerCase() == 'admin' ||
+                widget.role.toLowerCase() == 'infirmier' ||
+                widget.role.toLowerCase() == 'secretaire'
+            ? _SettingsPage(token: widget.token)
+            : PrescriptionsPage(token: widget.token, canCreate: false);
+      case 7:
+        return PatientsPage(token: widget.token, role: widget.role);
+      case 8:
+        return _SettingsPage(token: widget.token);
       default:
         return widget.role.toLowerCase() == 'patient'
             ? _PatientDashboard(
@@ -160,7 +205,8 @@ class _HomePageState extends State<HomePage> {
                 onRetry: () =>
                     setState(() => _dashboardFuture = _loadDashboard()),
               )
-            : widget.role.toLowerCase() == 'medecin'
+            : widget.role.toLowerCase() == 'medecin' ||
+                  widget.role.toLowerCase() == 'infirmier'
             ? _DoctorDashboard(
                 future: _dashboardFuture,
                 displayName: widget.displayName,
@@ -176,7 +222,7 @@ class _HomePageState extends State<HomePage> {
                 future: _dashboardFuture,
                 displayName: widget.displayName,
                 onAppointments: () => _select(1),
-                onUsers: () => _select(2),
+                onPatients: () => _select(7),
                 onComplete: (item) =>
                     _updateAppointment(item['id'].toString(), 'termine'),
                 onCancel: (item) =>
@@ -201,149 +247,168 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 800;
-    return Scaffold(
-      backgroundColor: _AdminColors.background,
-      drawer: wide
-          ? null
-          : widget.role.toLowerCase() == 'patient'
-          ? _PatientDrawer(
-              selectedIndex: _selectedIndex,
-              displayName: widget.displayName,
-              onSelect: _select,
-              onLogout: _logout,
-            )
-          : widget.role.toLowerCase() == 'medecin'
-          ? _DoctorDrawer(
-              selectedIndex: _selectedIndex,
-              displayName: widget.displayName,
-              onSelect: _select,
-              onLogout: _logout,
-            )
-          : _AdminDrawer(
-              selectedIndex: _selectedIndex,
-              displayName: widget.displayName,
-              onSelect: _select,
-              onLogout: _logout,
-            ),
-      appBar: wide
-          ? null
-          : AppBar(
-              backgroundColor: _AdminColors.background,
-              elevation: 0,
-              title: widget.role.toLowerCase() == 'patient'
-                  ? const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          radius: 21,
-                          backgroundColor: _AdminColors.teal,
-                          child: Icon(
-                            Icons.monitor_heart_outlined,
-                            color: Colors.white,
-                            size: 25,
-                          ),
-                        ),
-                        SizedBox(width: 10),
-                        Text(
-                          'Rova.',
-                          style: TextStyle(
-                            color: _AdminColors.text,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ],
-                    )
-                  : widget.role.toLowerCase() == 'medecin'
-                  ? const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          radius: 21,
-                          backgroundColor: _AdminColors.teal,
-                          child: Icon(
-                            Icons.monitor_heart_outlined,
-                            color: Colors.white,
-                            size: 25,
-                          ),
-                        ),
-                        SizedBox(width: 10),
-                        Text(
-                          'Rova.',
-                          style: TextStyle(
-                            color: _AdminColors.text,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ],
-                    )
-                  : Text(
-                      switch (_selectedIndex) {
-                        1 => 'Rendez-vous',
-                        2 => 'Utilisateurs',
-                        3 => 'Consultations',
-                        6 => 'Mes ordonnances',
-                        _ => 'Tableau de bord',
-                      },
-                      style: const TextStyle(
-                        color: _AdminColors.text,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-              actions: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 16),
-                  child: Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _AdminColors.tealSoft,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        widget.role.toLowerCase() == 'patient'
-                            ? 'Patient'
-                            : widget.role.toLowerCase() == 'medecin'
-                            ? 'Médecin'
-                            : widget.role == 'admin'
-                            ? 'Administrateur'
-                            : widget.role,
-                        style: const TextStyle(
-                          color: _AdminColors.teal,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ),
+    return FutureBuilder<_AdminSnapshot>(
+      future: _dashboardFuture,
+      builder: (context, snapshot) {
+        return Scaffold(
+          backgroundColor: _AdminColors.background,
+          drawer: wide
+              ? null
+              : widget.role.toLowerCase() == 'patient'
+              ? _PatientDrawer(
+                  selectedIndex: _selectedIndex,
+                  displayName: widget.displayName,
+                  onSelect: _select,
+                  onLogout: _logout,
+                )
+              : widget.role.toLowerCase() == 'medecin' ||
+                    widget.role.toLowerCase() == 'infirmier'
+              ? _DoctorDrawer(
+                  selectedIndex: _selectedIndex,
+                  displayName: widget.displayName,
+                  showPrescriptions: widget.role.toLowerCase() == 'medecin',
+                  onSelect: _select,
+                  onLogout: _logout,
+                )
+              : _AdminDrawer(
+                  selectedIndex: _selectedIndex,
+                  displayName: widget.displayName,
+                  onSelect: _select,
+                  onLogout: _logout,
                 ),
-              ],
-            ),
-      body: Row(
-        children: [
-          if (wide)
-            _AdminSidebar(
-              selectedIndex: _selectedIndex,
-              displayName: widget.displayName,
-              onSelect: _select,
-              onLogout: _logout,
-            ),
-          Expanded(child: _content()),
-        ],
-      ),
+          appBar: wide
+              ? null
+              : AppBar(
+                  backgroundColor: _AdminColors.background,
+                  elevation: 0,
+                  title: widget.role.toLowerCase() == 'patient'
+                      ? const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircleAvatar(
+                              radius: 21,
+                              backgroundColor: _AdminColors.teal,
+                              child: Icon(
+                                Icons.monitor_heart_outlined,
+                                color: Colors.white,
+                                size: 25,
+                              ),
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Rova.',
+                              style: TextStyle(
+                                color: _AdminColors.text,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        )
+                      : widget.role.toLowerCase() == 'medecin'
+                      ? const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircleAvatar(
+                              radius: 21,
+                              backgroundColor: _AdminColors.teal,
+                              child: Icon(
+                                Icons.monitor_heart_outlined,
+                                color: Colors.white,
+                                size: 25,
+                              ),
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Rova.',
+                              style: TextStyle(
+                                color: _AdminColors.text,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          switch (_selectedIndex) {
+                            1 => 'Rendez-vous',
+                            3 => 'Consultations',
+                            6 => 'Ordonnances',
+                            7 => 'Patients',
+                            8 => 'Paramètres',
+                            _ => 'Tableau de bord',
+                          },
+                          style: const TextStyle(
+                            color: _AdminColors.text,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                  actions: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 16),
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _AdminColors.tealSoft,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            widget.role.toLowerCase() == 'patient'
+                                ? 'Patient'
+                                : widget.role.toLowerCase() == 'medecin'
+                                ? 'Médecin'
+                                : widget.role == 'admin'
+                                ? 'Administrateur'
+                                : widget.role,
+                            style: const TextStyle(
+                              color: _AdminColors.teal,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+          body: Row(
+            children: [
+              if (wide)
+                _AdminSidebar(
+                  selectedIndex: _selectedIndex,
+                  displayName: widget.displayName,
+                  showMedical:
+                      widget.role.toLowerCase() == 'medecin' ||
+                      widget.role.toLowerCase() == 'infirmier',
+                  showPrescriptions: widget.role.toLowerCase() == 'medecin',
+                  onSelect: _select,
+                  onLogout: _logout,
+                ),
+              Expanded(child: _content()),
+            ],
+          ),
+        );
+      },
     );
   }
 }
 
 class _AdminSnapshot {
-  const _AdminSnapshot({required this.patients, required this.appointments});
+  const _AdminSnapshot({
+    required this.patients,
+    required this.appointments,
+    required this.consultations,
+    required this.prescriptions,
+  });
   final List<Map<String, dynamic>> patients;
   final List<Map<String, dynamic>> appointments;
+  final List<Map<String, dynamic>> consultations;
+  final List<Map<String, dynamic>> prescriptions;
 }
 
 class _AdminColors {
@@ -363,22 +428,26 @@ class _AdminSidebar extends StatelessWidget {
     required this.displayName,
     required this.onSelect,
     required this.onLogout,
+    this.showClose = false,
+    this.showMedical = false,
+    this.showPrescriptions = false,
   });
   final int selectedIndex;
   final String displayName;
   final ValueChanged<int> onSelect;
   final VoidCallback onLogout;
+  final bool showClose;
+  final bool showMedical;
+  final bool showPrescriptions;
 
   @override
   Widget build(BuildContext context) {
     final items = <(IconData, String, int)>[
       (Icons.grid_view_rounded, 'Tableau de bord', 0),
+      (Icons.people_alt_rounded, 'Patients', 7),
       (Icons.calendar_month_outlined, 'Rendez-vous', 1),
-      (Icons.medical_information_outlined, 'Consultations', 3),
-      (Icons.people_outline, 'Utilisateurs', 2),
-      (Icons.medical_services_outlined, 'Médecins', 4),
-      (Icons.account_circle_outlined, 'Mon profil', 5),
-      (Icons.receipt_long_outlined, 'Mes ordonnances', 6),
+      if (showMedical) (Icons.medical_information_outlined, 'Consultations', 3),
+      if (showPrescriptions) (Icons.receipt_long_outlined, 'Ordonnances', 6),
     ];
     return Container(
       width: 315,
@@ -390,11 +459,11 @@ class _AdminSidebar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 9),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 9),
             child: Row(
               children: [
-                CircleAvatar(
+                const CircleAvatar(
                   radius: 23,
                   backgroundColor: _AdminColors.teal,
                   child: Icon(
@@ -403,23 +472,34 @@ class _AdminSidebar extends StatelessWidget {
                     size: 28,
                   ),
                 ),
-                SizedBox(width: 13),
-                Text(
-                  'Rova.',
-                  style: TextStyle(
-                    color: _AdminColors.text,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w800,
+                const SizedBox(width: 13),
+                const Expanded(
+                  child: Text(
+                    'Rova.',
+                    style: TextStyle(
+                      color: _AdminColors.text,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
                 ),
+                if (showClose)
+                  IconButton(
+                    tooltip: 'Fermer le menu',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, color: _AdminColors.muted),
+                  ),
               ],
             ),
           ),
-          const SizedBox(height: 36),
+          const SizedBox(height: 42),
           for (final item in items)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                minVerticalPadding: 10,
                 leading: Icon(
                   item.$1,
                   color: selectedIndex == item.$3
@@ -428,6 +508,7 @@ class _AdminSidebar extends StatelessWidget {
                 ),
                 title: Text(
                   item.$2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: selectedIndex == item.$3
                         ? _AdminColors.text
@@ -435,6 +516,7 @@ class _AdminSidebar extends StatelessWidget {
                     fontWeight: selectedIndex == item.$3
                         ? FontWeight.w700
                         : FontWeight.w500,
+                    fontSize: 15,
                   ),
                 ),
                 selected: selectedIndex == item.$3,
@@ -446,21 +528,33 @@ class _AdminSidebar extends StatelessWidget {
               ),
             ),
           const Spacer(),
-          const Divider(color: _AdminColors.border),
           ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            minVerticalPadding: 10,
+            leading: const Icon(
+              Icons.settings_outlined,
+              color: _AdminColors.muted,
+            ),
+            title: const Text(
+              'Paramètres',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: _AdminColors.muted, fontSize: 15),
+            ),
+            selected: selectedIndex == 8,
+            selectedTileColor: _AdminColors.tealSoft,
+            onTap: () => onSelect(8),
+          ),
+          ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
             leading: const CircleAvatar(
               radius: 22,
               backgroundColor: _AdminColors.teal,
-              child: Text(
-                'AD',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
+              child: Icon(Icons.person_outline, color: Colors.white, size: 22),
             ),
             title: Text(
-              displayName,
+              displayName.isEmpty ? 'Utilisateur' : displayName,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: _AdminColors.text,
@@ -469,14 +563,19 @@ class _AdminSidebar extends StatelessWidget {
             ),
             subtitle: const Text(
               'Administrateur',
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(color: _AdminColors.muted),
             ),
+            trailing: const Icon(Icons.more_horiz, color: _AdminColors.muted),
+            onTap: () => onSelect(5),
           ),
           ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
             leading: const Icon(Icons.logout, color: _AdminColors.muted),
             title: const Text(
               'Se déconnecter',
-              style: TextStyle(color: _AdminColors.muted),
+              style: TextStyle(color: _AdminColors.muted, fontSize: 15),
             ),
             onTap: onLogout,
           ),
@@ -506,6 +605,7 @@ class _AdminDrawer extends StatelessWidget {
       child: _AdminSidebar(
         selectedIndex: selectedIndex,
         displayName: displayName,
+        showClose: true,
         onSelect: (index) {
           Navigator.pop(context);
           onSelect(index);
@@ -523,12 +623,14 @@ class _DoctorDrawer extends StatelessWidget {
   const _DoctorDrawer({
     required this.selectedIndex,
     required this.displayName,
+    required this.showPrescriptions,
     required this.onSelect,
     required this.onLogout,
   });
 
   final int selectedIndex;
   final String displayName;
+  final bool showPrescriptions;
   final ValueChanged<int> onSelect;
   final VoidCallback onLogout;
 
@@ -577,8 +679,14 @@ class _DoctorDrawer extends StatelessWidget {
             onTap: () => _select(context, 0),
           ),
           _DoctorNavItem(
+            icon: Icons.people_alt_rounded,
+            label: 'Patients',
+            selected: selectedIndex == 7,
+            onTap: () => _select(context, 7),
+          ),
+          _DoctorNavItem(
             icon: Icons.calendar_month_outlined,
-            label: 'Mon agenda',
+            label: 'Rendez-vous',
             selected: selectedIndex == 1,
             onTap: () => _select(context, 1),
           ),
@@ -588,41 +696,45 @@ class _DoctorDrawer extends StatelessWidget {
             selected: selectedIndex == 3,
             onTap: () => _select(context, 3),
           ),
-          _DoctorNavItem(
-            icon: Icons.account_circle_outlined,
-            label: 'Mon profil',
-            selected: selectedIndex == 5,
-            onTap: () => _select(context, 5),
-          ),
+          if (showPrescriptions)
+            _DoctorNavItem(
+              icon: Icons.receipt_long_outlined,
+              label: 'Ordonnances',
+              selected: selectedIndex == 6,
+              onTap: () => _select(context, 6),
+            ),
           const Spacer(),
           const Divider(color: _AdminColors.border),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(25, 20, 20, 8),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 22,
-                  backgroundColor: _AdminColors.teal,
-                  child: Text(
-                    _initials(displayName),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+          InkWell(
+            onTap: () => _select(context, 5),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(25, 20, 20, 8),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundColor: _AdminColors.teal,
+                    child: Text(
+                      _initials(displayName),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(
-                    displayName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: _AdminColors.text,
-                      fontWeight: FontWeight.w700,
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _AdminColors.text,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           ListTile(
@@ -662,15 +774,18 @@ class _DoctorNavItem extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
     child: ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14),
       leading: Icon(
         icon,
         color: selected ? _AdminColors.teal : _AdminColors.muted,
       ),
       title: Text(
         label,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(
           color: selected ? _AdminColors.text : _AdminColors.muted,
-          fontSize: 17,
+          fontSize: 15,
           fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
         ),
       ),
@@ -1104,58 +1219,55 @@ class _PatientDrawer extends StatelessWidget {
             onTap: () => _select(context, 0),
           ),
           _DoctorNavItem(
-            icon: Icons.event_available_outlined,
-            label: 'Prendre rendez-vous',
-            selected: false,
-            onTap: () => _select(context, 1),
-          ),
-          _DoctorNavItem(
             icon: Icons.calendar_month_outlined,
-            label: 'Mes rendez-vous',
+            label: 'Rendez-vous',
             selected: selectedIndex == 1,
             onTap: () => _select(context, 1),
           ),
           _DoctorNavItem(
+            icon: Icons.medical_information_outlined,
+            label: 'Consultations',
+            selected: selectedIndex == 3,
+            onTap: () => _select(context, 3),
+          ),
+          _DoctorNavItem(
             icon: Icons.receipt_long_outlined,
-            label: 'Mes ordonnances',
+            label: 'Ordonnances',
             selected: selectedIndex == 6,
             onTap: () => _select(context, 6),
           ),
-          _DoctorNavItem(
-            icon: Icons.account_circle_outlined,
-            label: 'Mon profil',
-            selected: selectedIndex == 5,
-            onTap: () => _select(context, 5),
-          ),
           const Spacer(),
           const Divider(color: _AdminColors.border),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(25, 20, 20, 8),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 22,
-                  backgroundColor: _AdminColors.teal,
-                  child: Text(
-                    _initials(displayName),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+          InkWell(
+            onTap: () => _select(context, 5),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(25, 20, 20, 8),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundColor: _AdminColors.teal,
+                    child: Text(
+                      _initials(displayName),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Text(
-                    displayName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: _AdminColors.text,
-                      fontWeight: FontWeight.w700,
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _AdminColors.text,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
           ListTile(
@@ -1516,7 +1628,7 @@ class _AdminDashboard extends StatelessWidget {
     required this.future,
     required this.displayName,
     required this.onAppointments,
-    required this.onUsers,
+    required this.onPatients,
     required this.onComplete,
     required this.onCancel,
     required this.onRetry,
@@ -1524,7 +1636,7 @@ class _AdminDashboard extends StatelessWidget {
   final Future<_AdminSnapshot> future;
   final String displayName;
   final VoidCallback onAppointments;
-  final VoidCallback onUsers;
+  final VoidCallback onPatients;
   final ValueChanged<Map<String, dynamic>> onComplete;
   final ValueChanged<Map<String, dynamic>> onCancel;
   final VoidCallback onRetry;
@@ -1549,12 +1661,8 @@ class _AdminDashboard extends StatelessWidget {
         final data = snapshot.data!;
         final appointments = [...data.appointments]
           ..sort((a, b) => _appointmentDate(a).compareTo(_appointmentDate(b)));
-        final pending = appointments
-            .where(
-              (item) =>
-                  (item['statut']?.toString() ?? '').toLowerCase() ==
-                  'confirme',
-            )
+        final todayAppointments = appointments
+            .where((item) => _isTodayAppointment(item))
             .length;
         return RefreshIndicator(
           onRefresh: () async => onRetry(),
@@ -1568,23 +1676,45 @@ class _AdminDashboard extends StatelessWidget {
             children: [
               const Text(
                 'Administrateur · Rova',
-                style: TextStyle(color: _AdminColors.muted, fontSize: 17),
+                style: TextStyle(color: _AdminColors.muted, fontSize: 15),
               ),
               const SizedBox(height: 12),
               Text(
                 'Bonjour ${displayName.isEmpty ? 'Rova' : displayName},\nbienvenue.',
                 style: TextStyle(
                   color: _AdminColors.text,
-                  fontSize: MediaQuery.sizeOf(context).width < 600 ? 26 : 31,
+                  fontSize: MediaQuery.sizeOf(context).width < 600 ? 26 : 29,
                   fontWeight: FontWeight.w800,
-                  height: 1.25,
+                  height: 1.18,
                 ),
               ),
-              const SizedBox(height: 34),
+              const SizedBox(height: 14),
+              const Text(
+                'Voici un aperçu de l’activité de votre centre.',
+                style: TextStyle(
+                  color: _AdminColors.muted,
+                  fontSize: 16,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 28),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: onAppointments,
+                  icon: const Icon(Icons.add, size: 22),
+                  label: const Text('Nouveau rendez-vous'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(50),
+                    textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 42),
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final columns = constraints.maxWidth < 700 ? 1 : 3;
-                  final aspectRatio = constraints.maxWidth < 700 ? 4.1 : 2.5;
+                  final columns = constraints.maxWidth < 700 ? 2 : 4;
+                  final aspectRatio = constraints.maxWidth < 700 ? 1.35 : 1.55;
                   return GridView.count(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -1595,59 +1725,26 @@ class _AdminDashboard extends StatelessWidget {
                     children: [
                       _AdminStat(
                         icon: Icons.calendar_month_outlined,
-                        label: 'Rendez-vous au total',
-                        value: '${appointments.length}',
-                        onTap: onAppointments,
-                      ),
-                      _AdminStat(
-                        icon: Icons.event_available_outlined,
-                        label: 'En attente',
-                        value: '$pending',
+                        label: "Rendez-vous aujourd'hui",
+                        value: '$todayAppointments',
                         onTap: onAppointments,
                       ),
                       _AdminStat(
                         icon: Icons.people_outline,
-                        label: 'Utilisateurs',
+                        label: 'Patients suivis',
                         value: '${data.patients.length}',
-                        onTap: onUsers,
+                        onTap: onPatients,
                       ),
                     ],
                   );
                 },
               ),
               const SizedBox(height: 40),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Rendez-vous à venir',
-                    style: TextStyle(
-                      color: _AdminColors.text,
-                      fontSize: 23,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: onAppointments,
-                    child: const Text('Tout voir'),
-                  ),
-                ],
+              _AdminUpcomingAppointments(
+                appointments: appointments,
+                patients: data.patients,
+                onTap: onAppointments,
               ),
-              const SizedBox(height: 12),
-              if (appointments.isEmpty)
-                const _EmptyAdminAppointments()
-              else
-                ...appointments
-                    .take(5)
-                    .map(
-                      (item) => _AdminAppointmentCard(
-                        item: item,
-                        patients: data.patients,
-                        onTap: onAppointments,
-                        onComplete: () => onComplete(item),
-                        onCancel: () => onCancel(item),
-                      ),
-                    ),
             ],
           ),
         );
@@ -1670,7 +1767,7 @@ class _AdminStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(minHeight: 112),
+    constraints: const BoxConstraints(minHeight: 118),
     child: Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1688,20 +1785,20 @@ class _AdminStat extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(20),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 20),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
-                width: 56,
-                height: 56,
+                width: 44,
+                height: 44,
                 decoration: BoxDecoration(
                   color: _AdminColors.tealSoft,
                   borderRadius: BorderRadius.circular(14),
                 ),
-                child: Icon(icon, color: _AdminColors.teal, size: 30),
+                child: Icon(icon, color: _AdminColors.teal, size: 24),
               ),
-              const SizedBox(width: 20),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1714,7 +1811,7 @@ class _AdminStat extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: _AdminColors.muted,
-                        fontSize: 16,
+                        fontSize: 13,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -1725,7 +1822,7 @@ class _AdminStat extends StatelessWidget {
                         value,
                         style: const TextStyle(
                           color: _AdminColors.text,
-                          fontSize: 30,
+                          fontSize: 26,
                           fontWeight: FontWeight.w800,
                         ),
                       ),
@@ -1741,105 +1838,230 @@ class _AdminStat extends StatelessWidget {
   );
 }
 
-class _AdminAppointmentCard extends StatelessWidget {
-  const _AdminAppointmentCard({
-    required this.item,
+class _AdminUpcomingAppointments extends StatelessWidget {
+  const _AdminUpcomingAppointments({
+    required this.appointments,
     required this.patients,
     required this.onTap,
-    required this.onComplete,
-    required this.onCancel,
   });
-  final Map<String, dynamic> item;
+
+  final List<Map<String, dynamic>> appointments;
   final List<Map<String, dynamic>> patients;
   final VoidCallback onTap;
-  final VoidCallback onComplete;
-  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
-    final patient = patients.cast<Map<String, dynamic>?>().firstWhere(
-      (value) => value?['id']?.toString() == item['patient_id']?.toString(),
-      orElse: () => null,
-    );
-    final name = patient == null
-        ? (item['patient_nom']?.toString() ?? 'Patient')
-        : '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'.trim();
-    final date = DateTime.tryParse(_appointmentDate(item));
-    final details = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          item['motif']?.toString() ?? 'Rendez-vous',
-          style: const TextStyle(
-            color: _AdminColors.text,
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 7),
-        Text(
-          '${date == null ? 'Date indisponible' : MaterialLocalizations.of(context).formatFullDate(date)}  ·  ${date == null ? '--:--' : TimeOfDay.fromDateTime(date).format(context)}  ·  $name',
-          style: const TextStyle(color: _AdminColors.muted, fontSize: 12),
-        ),
-      ],
-    );
-    final actions = Wrap(
-      spacing: 10,
-      runSpacing: 8,
-      children: [
-        FilledButton(
-          onPressed: onComplete,
-          style: FilledButton.styleFrom(
-            backgroundColor: _AdminColors.tealSoft,
-            foregroundColor: _AdminColors.teal,
-          ),
-          child: const Text('Marquer terminé'),
-        ),
-        OutlinedButton(
-          onPressed: onCancel,
-          style: OutlinedButton.styleFrom(foregroundColor: _AdminColors.danger),
-          child: const Text('Annuler'),
-        ),
-      ],
-    );
-    return Card(
-      margin: const EdgeInsets.only(bottom: 14),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    final upcoming = appointments
+        .where((item) {
+          final status = item['statut']?.toString().toLowerCase() ?? '';
+          return status != 'annule' &&
+              status != 'annulé' &&
+              status != 'termine';
+        })
+        .take(2)
+        .toList();
+    return _DashboardSection(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: _AdminColors.tealSoft,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.calendar_month_outlined,
-                      color: _AdminColors.teal,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(child: details),
-                ],
+              const Expanded(
+                child: Text(
+                  'Prochains rendez-vous',
+                  style: _DashboardSection.titleStyle,
+                ),
               ),
-              const SizedBox(height: 16),
-              Align(alignment: Alignment.centerRight, child: actions),
+              InkWell(
+                onTap: onTap,
+                child: const Row(
+                  children: [
+                    Text(
+                      'Tout voir',
+                      style: TextStyle(
+                        color: _AdminColors.teal,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Icon(Icons.chevron_right, color: _AdminColors.teal),
+                  ],
+                ),
+              ),
             ],
           ),
-        ),
+          if (upcoming.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              _dashboardDateLabel(upcoming.first),
+              style: const TextStyle(
+                color: _AdminColors.muted,
+                fontSize: 15,
+                height: 1.4,
+              ),
+            ),
+          ],
+          const SizedBox(height: 18),
+          if (upcoming.isEmpty)
+            const Text(
+              'Aucun rendez-vous à venir.',
+              style: TextStyle(color: _AdminColors.muted),
+            )
+          else
+            for (var index = 0; index < upcoming.length; index++)
+              _DashboardAppointmentLine(
+                appointment: upcoming[index],
+                patients: patients,
+                showDivider: index < upcoming.length - 1,
+              ),
+        ],
       ),
     );
   }
 }
+
+class _DashboardAppointmentLine extends StatelessWidget {
+  const _DashboardAppointmentLine({
+    required this.appointment,
+    required this.patients,
+    required this.showDivider,
+  });
+
+  final Map<String, dynamic> appointment;
+  final List<Map<String, dynamic>> patients;
+  final bool showDivider;
+
+  @override
+  Widget build(BuildContext context) {
+    final date = DateTime.tryParse(_appointmentDate(appointment));
+    final patient = patients.cast<Map<String, dynamic>?>().firstWhere(
+      (item) =>
+          item?['id']?.toString() == appointment['patient_id']?.toString(),
+      orElse: () => null,
+    );
+    final patientName = patient == null
+        ? appointment['patient_nom']?.toString() ?? 'Patient'
+        : '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'.trim();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 68,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      date == null
+                          ? '--:--'
+                          : TimeOfDay.fromDateTime(date).format(context),
+                      style: const TextStyle(
+                        color: _AdminColors.text,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      date == null ? '--' : '${date.day} sept.',
+                      style: const TextStyle(
+                        color: _AdminColors.muted,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      patientName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _AdminColors.text,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      appointment['motif']?.toString() ?? 'Consultation',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: _AdminColors.muted,
+                        fontSize: 14,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      '♧  Dr. ${appointment['medecin_nom'] ?? 'Médecin'}',
+                      style: const TextStyle(
+                        color: _AdminColors.muted,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Color(0xFF9BAEB2)),
+            ],
+          ),
+        ),
+        if (showDivider) const Divider(height: 1, color: _AdminColors.border),
+      ],
+    );
+  }
+}
+
+class _DashboardSection extends StatelessWidget {
+  const _DashboardSection({required this.child});
+
+  final Widget child;
+
+  static const titleStyle = TextStyle(
+    color: _AdminColors.text,
+    fontSize: 20,
+    fontWeight: FontWeight.w500,
+  );
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(22, 22, 22, 10),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: _AdminColors.border),
+    ),
+    child: child,
+  );
+}
+
+String _dashboardDateLabel(Map<String, dynamic> appointment) {
+  final date = DateTime.tryParse(_appointmentDate(appointment));
+  if (date == null) return 'Date non renseignée';
+  return '${_weekdayName(date.weekday)} ${date.day} septembre ${date.year}';
+}
+
+String _weekdayName(int weekday) => const [
+  '',
+  'Lundi',
+  'Mardi',
+  'Mercredi',
+  'Jeudi',
+  'Vendredi',
+  'Samedi',
+  'Dimanche',
+][weekday.clamp(0, 7)];
 
 class _EmptyAdminAppointments extends StatelessWidget {
   const _EmptyAdminAppointments();
@@ -1894,6 +2116,93 @@ class _ThemeToggleButton extends StatelessWidget {
   );
 }
 
+class _SettingsPage extends StatelessWidget {
+  const _SettingsPage({required this.token});
+
+  final String token;
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          Material(
+            color: _AdminColors.background,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Paramètres',
+                    style: TextStyle(
+                      color: _AdminColors.text,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Gérez les réglages de base et les utilisateurs de l’application.',
+                    style: TextStyle(color: _AdminColors.muted, fontSize: 15),
+                  ),
+                  const SizedBox(height: 20),
+                  TabBar(
+                    labelColor: _AdminColors.teal,
+                    unselectedLabelColor: _AdminColors.muted,
+                    indicatorColor: _AdminColors.teal,
+                    tabs: const [
+                      Tab(text: 'Paramètres de base'),
+                      Tab(text: 'Utilisateurs'),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(
+                          Icons.brightness_6_outlined,
+                          color: _AdminColors.teal,
+                        ),
+                        title: const Text('Apparence'),
+                        subtitle: const Text(
+                          'Choisissez le thème clair ou sombre de l’application.',
+                        ),
+                        trailing: const _ThemeToggleButton(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Card(
+                      child: ListTile(
+                        leading: Icon(
+                          Icons.language_outlined,
+                          color: _AdminColors.teal,
+                        ),
+                        title: Text('Langue'),
+                        subtitle: Text('Français'),
+                      ),
+                    ),
+                  ],
+                ),
+                _UsersPage(token: token),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _UsersPage extends StatefulWidget {
   const _UsersPage({required this.token});
 
@@ -1944,15 +2253,157 @@ class _UsersPageState extends State<_UsersPage> {
 
   List<Map<String, dynamic>> _filteredUsers(List<Map<String, dynamic>> users) {
     final query = _searchController.text.trim().toLowerCase();
+    final selectedRole = _roleFilter.toLowerCase();
     return users.where((user) {
       final name = (user['nom'] ?? user['name'] ?? '').toString();
-      final email = (user['email'] ?? '').toString();
-      final role = (user['role'] ?? '').toString();
+      final login = (user['login'] ?? user['email'] ?? '').toString();
+      final specialty = (user['specialite'] ?? '').toString();
+      final role = (user['role'] ?? '').toString().toLowerCase();
       final matchesSearch =
-          query.isEmpty || '$name $email'.toLowerCase().contains(query);
-      final matchesRole = _roleFilter == 'Tous' || role == _roleFilter;
+          query.isEmpty ||
+          '$name $login $specialty'.toLowerCase().contains(query);
+      final matchesRole =
+          selectedRole == 'tous' || role == _userRoleKey(_roleFilter);
       return matchesSearch && matchesRole;
     }).toList();
+  }
+
+  String _userRoleKey(String label) => switch (label.toLowerCase()) {
+    'administrateur' => 'admin',
+    'médecin' => 'medecin',
+    'secrétaire' => 'secretaire',
+    'patient' => 'patient',
+    _ => label.toLowerCase(),
+  };
+
+  Future<void> _createUser() async {
+    final nameController = TextEditingController();
+    final loginController = TextEditingController();
+    final passwordController = TextEditingController();
+    var role = 'patient';
+    final formKey = GlobalKey<FormState>();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Créer un compte'),
+          content: Form(
+            key: formKey,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Nom complet'),
+                    validator: (value) =>
+                        value == null || value.trim().length < 2
+                        ? 'Nom obligatoire'
+                        : null,
+                  ),
+                  TextFormField(
+                    controller: loginController,
+                    decoration: const InputDecoration(labelText: 'Identifiant'),
+                    validator: (value) =>
+                        value == null || value.trim().length < 3
+                        ? 'Identifiant obligatoire'
+                        : null,
+                  ),
+                  TextFormField(
+                    controller: passwordController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Mot de passe',
+                    ),
+                    validator: (value) => value == null || value.length < 6
+                        ? '6 caractères minimum'
+                        : null,
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: role,
+                    decoration: const InputDecoration(labelText: 'Rôle'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'admin',
+                        child: Text('Administrateur'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'medecin',
+                        child: Text('Médecin'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'infirmier',
+                        child: Text('Infirmier'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'secretaire',
+                        child: Text('Secrétaire'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'patient',
+                        child: Text('Patient'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setDialogState(() => role = value);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Annuler'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                if (!formKey.currentState!.validate()) return;
+                final response = await http.post(
+                  Uri.parse(
+                    '${_LoginPageState._apiBaseUrl}/api/v1/admin/users',
+                  ),
+                  headers: {
+                    'Authorization': 'Bearer ${widget.token}',
+                    'Content-Type': 'application/json',
+                  },
+                  body: jsonEncode({
+                    'nom': nameController.text.trim(),
+                    'login': loginController.text.trim(),
+                    'mot_de_passe': passwordController.text,
+                    'role': role,
+                  }),
+                );
+                if (!dialogContext.mounted) return;
+                if (response.statusCode == 201) {
+                  Navigator.pop(dialogContext, true);
+                } else {
+                  String detail = 'Création impossible.';
+                  try {
+                    detail =
+                        (jsonDecode(response.body)
+                                as Map<String, dynamic>)['detail']
+                            ?.toString() ??
+                        detail;
+                  } catch (_) {}
+                  ScaffoldMessenger.of(
+                    dialogContext,
+                  ).showSnackBar(SnackBar(content: Text(detail)));
+                }
+              },
+              child: const Text('Créer'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameController.dispose();
+    loginController.dispose();
+    passwordController.dispose();
+    if (result == true && mounted) {
+      setState(() => _usersFuture = _loadUsers());
+    }
   }
 
   @override
@@ -1982,25 +2433,32 @@ class _UsersPageState extends State<_UsersPage> {
                     ),
                   ),
                   const SizedBox(width: 18),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Utilisateurs',
-                        style: TextStyle(
-                          color: _AdminColors.text,
-                          fontSize: 29,
-                          fontWeight: FontWeight.w900,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Utilisateurs',
+                          style: TextStyle(
+                            color: _AdminColors.text,
+                            fontSize: 29,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
-                      ),
-                      Text(
-                        '${snapshot.data?.length ?? 0} utilisateur(s)',
-                        style: const TextStyle(
-                          color: _AdminColors.muted,
-                          fontSize: 16,
+                        Text(
+                          '${snapshot.data?.length ?? 0} utilisateur(s)',
+                          style: const TextStyle(
+                            color: _AdminColors.muted,
+                            fontSize: 16,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _createUser,
+                    icon: const Icon(Icons.person_add_alt_1),
+                    label: const Text('Créer'),
                   ),
                 ],
               ),
@@ -2085,7 +2543,11 @@ class _UsersPageState extends State<_UsersPage> {
               if (snapshot.connectionState == ConnectionState.waiting)
                 const Center(child: CircularProgressIndicator())
               else
-                _UsersList(users: users),
+                _UsersList(
+                  users: users,
+                  token: widget.token,
+                  onChanged: () => setState(() => _usersFuture = _loadUsers()),
+                ),
             ],
           ),
         );
@@ -2095,9 +2557,15 @@ class _UsersPageState extends State<_UsersPage> {
 }
 
 class _UsersList extends StatelessWidget {
-  const _UsersList({required this.users});
+  const _UsersList({
+    required this.users,
+    required this.token,
+    required this.onChanged,
+  });
 
   final List<Map<String, dynamic>> users;
+  final String token;
+  final VoidCallback onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -2122,7 +2590,11 @@ class _UsersList extends StatelessWidget {
       child: Column(
         children: [
           for (var index = 0; index < users.length; index++) ...[
-            _UserListTile(user: users[index]),
+            _UserListTile(
+              user: users[index],
+              token: token,
+              onChanged: onChanged,
+            ),
             if (index < users.length - 1)
               const Divider(height: 1, color: _AdminColors.border),
           ],
@@ -2133,15 +2605,28 @@ class _UsersList extends StatelessWidget {
 }
 
 class _UserListTile extends StatelessWidget {
-  const _UserListTile({required this.user});
+  const _UserListTile({
+    required this.user,
+    required this.token,
+    required this.onChanged,
+  });
 
   final Map<String, dynamic> user;
+  final String token;
+  final VoidCallback onChanged;
 
   @override
   Widget build(BuildContext context) {
     final name = (user['nom'] ?? user['name'] ?? 'Utilisateur').toString();
-    final email = (user['email'] ?? '').toString();
-    final role = (user['role'] ?? 'Patient').toString();
+    final email = (user['email'] ?? user['login'] ?? '').toString();
+    final roleKey = (user['role'] ?? 'patient').toString().toLowerCase();
+    final role = switch (roleKey) {
+      'admin' => 'Administrateur',
+      'medecin' => 'Médecin',
+      'infirmier' => 'Infirmier',
+      'secretaire' => 'Secrétaire',
+      _ => 'Patient',
+    };
     final specialty = (user['specialite'] ?? '').toString();
     final initials = name
         .split(RegExp(r'\s+'))
@@ -2149,7 +2634,7 @@ class _UserListTile extends StatelessWidget {
         .take(2)
         .map((part) => part[0].toUpperCase())
         .join();
-    final isAdmin = role == 'Administrateur';
+    final isAdmin = roleKey == 'admin';
     final badgeColor = role == 'Médecin'
         ? const Color(0xFFE2F3EF)
         : role == 'Secrétaire'
@@ -2158,75 +2643,279 @@ class _UserListTile extends StatelessWidget {
         ? const Color(0xFFE7F0F1)
         : _AdminColors.teal;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 25,
-            backgroundColor: const Color(0xFFE4F1F2),
-            child: Text(
-              initials,
-              style: const TextStyle(
-                color: _AdminColors.text,
-                fontWeight: FontWeight.w700,
+    return InkWell(
+      onTap: () => _editUser(context),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 25,
+              backgroundColor: const Color(0xFFE4F1F2),
+              child: Text(
+                initials,
+                style: const TextStyle(
+                  color: _AdminColors.text,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 20),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
-                  style: const TextStyle(
-                    color: _AdminColors.text,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+            const SizedBox(width: 20),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: const TextStyle(
+                      color: _AdminColors.text,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  specialty.isEmpty ? email : '$email · $specialty',
-                  style: const TextStyle(
-                    color: _AdminColors.muted,
-                    fontSize: 14,
+                  const SizedBox(height: 3),
+                  Text(
+                    specialty.isEmpty ? email : '$email · $specialty',
+                    style: const TextStyle(
+                      color: _AdminColors.muted,
+                      fontSize: 14,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-              color: isAdmin ? _AdminColors.teal : badgeColor,
-              borderRadius: BorderRadius.circular(999),
-              border: isAdmin ? null : Border.all(color: _AdminColors.border),
-            ),
-            child: Text(
-              role,
-              style: TextStyle(
-                color: isAdmin ? Colors.white : _AdminColors.teal,
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
+                ],
               ),
             ),
-          ),
-          if (!isAdmin) ...[
-            const SizedBox(width: 18),
-            const Icon(
-              Icons.delete_outline,
-              color: _AdminColors.muted,
-              size: 21,
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: isAdmin ? _AdminColors.teal : badgeColor,
+                borderRadius: BorderRadius.circular(999),
+                border: isAdmin ? null : Border.all(color: _AdminColors.border),
+              ),
+              child: Text(
+                role,
+                style: TextStyle(
+                  color: isAdmin ? Colors.white : _AdminColors.teal,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ),
+            if (!isAdmin)
+              PopupMenuButton<String>(
+                tooltip: 'Actions utilisateur',
+                onSelected: (action) async {
+                  final id = user['id']?.toString();
+                  if (id == null) return;
+                  if (action == 'deactivate') {
+                    final response = await http.delete(
+                      Uri.parse(
+                        '${_LoginPageState._apiBaseUrl}/api/v1/admin/users/$id',
+                      ),
+                      headers: {'Authorization': 'Bearer $token'},
+                    );
+                    if (response.statusCode == 200) onChanged();
+                  }
+                  if (action == 'reset') {
+                    if (!context.mounted) return;
+                    final password = await _askForPassword(context);
+                    if (password == null) return;
+                    final response = await http.post(
+                      Uri.parse(
+                        '${_LoginPageState._apiBaseUrl}/api/v1/admin/users/$id/reset-password',
+                      ),
+                      headers: {
+                        'Authorization': 'Bearer $token',
+                        'Content-Type': 'application/json',
+                      },
+                      body: jsonEncode({'mot_de_passe': password}),
+                    );
+                    if (response.statusCode == 200 && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Mot de passe réinitialisé.'),
+                        ),
+                      );
+                    }
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'reset',
+                    child: Text('Réinitialiser le mot de passe'),
+                  ),
+                  PopupMenuItem(
+                    value: 'deactivate',
+                    child: Text('Désactiver le compte'),
+                  ),
+                ],
+              ),
           ],
-        ],
+        ),
       ),
     );
   }
+
+  Future<void> _editUser(BuildContext context) async {
+    final nameController = TextEditingController(
+      text: (user['nom'] ?? '').toString(),
+    );
+    final loginController = TextEditingController(
+      text: (user['login'] ?? user['email'] ?? '').toString(),
+    );
+    final specialityController = TextEditingController(
+      text: (user['specialite'] ?? '').toString(),
+    );
+    final orderNumberController = TextEditingController(
+      text: (user['numero_ordre'] ?? '').toString(),
+    );
+    var role = (user['role'] ?? 'patient').toString();
+    final formKey = GlobalKey<FormState>();
+    final updated = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Profil de ${nameController.text}'),
+          content: Form(
+            key: formKey,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Nom complet'),
+                    validator: (value) =>
+                        value == null || value.trim().length < 2
+                        ? 'Nom obligatoire'
+                        : null,
+                  ),
+                  TextFormField(
+                    controller: loginController,
+                    decoration: const InputDecoration(labelText: 'Identifiant'),
+                    validator: (value) =>
+                        value == null || value.trim().length < 3
+                        ? 'Identifiant obligatoire'
+                        : null,
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: role,
+                    decoration: const InputDecoration(labelText: 'Rôle'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'admin',
+                        child: Text('Administrateur'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'medecin',
+                        child: Text('Médecin'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'infirmier',
+                        child: Text('Infirmier'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'secretaire',
+                        child: Text('Secrétaire'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'patient',
+                        child: Text('Patient'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setDialogState(() => role = value);
+                    },
+                  ),
+                  TextFormField(
+                    controller: specialityController,
+                    decoration: const InputDecoration(labelText: 'Spécialité'),
+                  ),
+                  TextFormField(
+                    controller: orderNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Numéro professionnel',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Annuler'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                if (!formKey.currentState!.validate()) return;
+                final id = user['id']?.toString();
+                if (id == null || id.isEmpty) return;
+                final response = await http.put(
+                  Uri.parse(
+                    '${_LoginPageState._apiBaseUrl}/api/v1/admin/users/$id',
+                  ),
+                  headers: {
+                    'Authorization': 'Bearer $token',
+                    'Content-Type': 'application/json',
+                  },
+                  body: jsonEncode({
+                    'nom': nameController.text.trim(),
+                    'login': loginController.text.trim(),
+                    'role': role,
+                    'specialite': specialityController.text.trim(),
+                    'numero_ordre': orderNumberController.text.trim(),
+                  }),
+                );
+                if (!dialogContext.mounted) return;
+                if (response.statusCode == 200) {
+                  Navigator.pop(dialogContext, true);
+                } else {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('Modification impossible.')),
+                  );
+                }
+              },
+              child: const Text('Enregistrer'),
+            ),
+          ],
+        ),
+      ),
+    );
+    nameController.dispose();
+    loginController.dispose();
+    specialityController.dispose();
+    orderNumberController.dispose();
+    if (updated == true) onChanged();
+  }
+}
+
+Future<String?> _askForPassword(BuildContext context) async {
+  final controller = TextEditingController();
+  final value = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Nouveau mot de passe'),
+      content: TextField(
+        controller: controller,
+        obscureText: true,
+        decoration: const InputDecoration(labelText: 'Mot de passe'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, controller.text),
+          child: const Text('Réinitialiser'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return value != null && value.length >= 6 ? value : null;
 }
 
 class _DoctorsPage extends StatefulWidget {
@@ -2497,10 +3186,17 @@ class _ProfilePageState extends State<_ProfilePage> {
   late final TextEditingController _nameController;
   late final TextEditingController _emailController;
   late final TextEditingController _phoneController;
+  late final TextEditingController _addressController;
+  late final TextEditingController _emergencyController;
+  late final TextEditingController _allergiesController;
+  late final TextEditingController _birthDateController;
+  final _currentPasswordController = TextEditingController();
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   bool _savingProfile = false;
   bool _savingPassword = false;
+  String? _birthDate;
+  String? _bloodGroup;
 
   @override
   void initState() {
@@ -2510,6 +3206,10 @@ class _ProfilePageState extends State<_ProfilePage> {
     );
     _emailController = TextEditingController();
     _phoneController = TextEditingController();
+    _addressController = TextEditingController();
+    _emergencyController = TextEditingController();
+    _allergiesController = TextEditingController();
+    _birthDateController = TextEditingController();
     _loadProfile();
   }
 
@@ -2526,6 +3226,14 @@ class _ProfilePageState extends State<_ProfilePage> {
             profile['nom']?.toString() ?? _nameController.text;
         _emailController.text =
             profile['email']?.toString() ?? profile['login']?.toString() ?? '';
+        _birthDate = profile['date_naissance']?.toString();
+        _birthDateController.text = _birthDate ?? '';
+        _bloodGroup = profile['groupe_sanguin']?.toString();
+        _phoneController.text = profile['telephone']?.toString() ?? '';
+        _addressController.text = profile['adresse']?.toString() ?? '';
+        _emergencyController.text =
+            profile['contact_urgence']?.toString() ?? '';
+        _allergiesController.text = profile['allergies']?.toString() ?? '';
       });
     } catch (_) {}
   }
@@ -2535,6 +3243,11 @@ class _ProfilePageState extends State<_ProfilePage> {
     _nameController.dispose();
     _emailController.dispose();
     _phoneController.dispose();
+    _addressController.dispose();
+    _emergencyController.dispose();
+    _allergiesController.dispose();
+    _birthDateController.dispose();
+    _currentPasswordController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
@@ -2551,8 +3264,15 @@ class _ProfilePageState extends State<_ProfilePage> {
         },
         body: jsonEncode({
           'nom': _nameController.text.trim(),
-          'email': _emailController.text.trim(),
-          'telephone': _phoneController.text.trim(),
+          'login': _emailController.text.trim(),
+          if (widget.role.toLowerCase() == 'patient') ...{
+            'date_naissance': _birthDate,
+            'telephone': _phoneController.text.trim(),
+            'adresse': _addressController.text.trim(),
+            'contact_urgence': _emergencyController.text.trim(),
+            'groupe_sanguin': _bloodGroup,
+            'allergies': _allergiesController.text.trim(),
+          },
         }),
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -2564,6 +3284,22 @@ class _ProfilePageState extends State<_ProfilePage> {
     } finally {
       if (mounted) setState(() => _savingProfile = false);
     }
+  }
+
+  Future<void> _selectBirthDate() async {
+    final initialDate = DateTime.tryParse(_birthDate ?? '') ?? DateTime(1990);
+    final selected = await showDatePicker(
+      context: context,
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+      initialDate: initialDate,
+    );
+    if (selected == null || !mounted) return;
+    final value = selected.toIso8601String().substring(0, 10);
+    setState(() {
+      _birthDate = value;
+      _birthDateController.text = value;
+    });
   }
 
   Future<void> _updatePassword() async {
@@ -2583,7 +3319,10 @@ class _ProfilePageState extends State<_ProfilePage> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'mot_de_passe': _newPasswordController.text}),
+        body: jsonEncode({
+          'ancien_mot_de_passe': _currentPasswordController.text,
+          'nouveau_mot_de_passe': _newPasswordController.text,
+        }),
       );
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw Exception();
@@ -2607,75 +3346,114 @@ class _ProfilePageState extends State<_ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    final roleLabel = widget.role.toLowerCase() == 'admin'
-        ? 'Administrateur'
-        : widget.role;
+    final isPatient = widget.role.toLowerCase() == 'patient';
+    final roleLabel = switch (widget.role.toLowerCase()) {
+      'admin' => 'Administrateur',
+      'medecin' => 'Médecin',
+      'infirmier' => 'Infirmier',
+      'secretaire' => 'Secrétaire',
+      _ => 'Patient',
+    };
     return ListView(
       padding: const EdgeInsets.fromLTRB(22, 28, 22, 36),
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        Column(
           children: [
-            const CircleAvatar(
-              radius: 35,
+            CircleAvatar(
+              radius: 46,
               backgroundColor: _AdminColors.teal,
-              child: Icon(
-                Icons.account_circle_outlined,
-                color: Colors.white,
-                size: 43,
+              child: Text(
+                _initials(_nameController.text),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _nameController.text,
-                    style: const TextStyle(
-                      color: _AdminColors.text,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '$roleLabel ·',
-                    style: const TextStyle(
-                      color: _AdminColors.muted,
-                      fontSize: 17,
-                    ),
-                  ),
-                  Text(
-                    _emailController.text,
-                    style: const TextStyle(
-                      color: _AdminColors.muted,
-                      fontSize: 17,
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 20),
+            Text(
+              isPatient ? 'Dossier patient' : 'Profil utilisateur',
+              style: const TextStyle(color: _AdminColors.muted, fontSize: 15),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _nameController.text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: _AdminColors.text,
+                fontSize: 29,
+                fontWeight: FontWeight.w500,
               ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              isPatient && _birthDate != null
+                  ? '${_patientAge(_birthDate) ?? 'Âge non renseigné'} ans · $roleLabel'
+                  : '$roleLabel · ${_emailController.text}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: _AdminColors.muted, fontSize: 16),
             ),
           ],
         ),
         const SizedBox(height: 34),
         _ProfileSection(
           title: 'Informations personnelles',
-          description:
-              'Mettez à jour vos coordonnées.\nL’email et le rôle ne sont pas modifiables.',
+          description: 'Modifiez votre nom complet et votre identifiant.',
           children: [
             _ProfileField(label: 'Nom complet', controller: _nameController),
             _ProfileField(
-              label: 'Email',
+              label: 'Identifiant',
               controller: _emailController,
-              enabled: false,
               keyboardType: TextInputType.emailAddress,
             ),
-            _ProfileField(
-              label: 'Téléphone',
-              controller: _phoneController,
-              keyboardType: TextInputType.phone,
-            ),
+            if (isPatient) ...[
+              _ProfileField(
+                label: 'Téléphone',
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+              ),
+              _ProfileField(
+                label: 'Date de naissance',
+                controller: _birthDateController,
+                readOnly: true,
+                onTap: _selectBirthDate,
+                suffixIcon: Icons.calendar_today_outlined,
+              ),
+              _ProfileField(
+                label: 'Adresse',
+                controller: _addressController,
+                maxLines: 2,
+              ),
+              DropdownButtonFormField<String>(
+                initialValue: _bloodGroup?.isEmpty == true ? null : _bloodGroup,
+                decoration: const InputDecoration(
+                  labelText: 'Groupe sanguin',
+                  prefixIcon: Icon(Icons.bloodtype_outlined),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'A+', child: Text('A+')),
+                  DropdownMenuItem(value: 'A-', child: Text('A-')),
+                  DropdownMenuItem(value: 'B+', child: Text('B+')),
+                  DropdownMenuItem(value: 'B-', child: Text('B-')),
+                  DropdownMenuItem(value: 'AB+', child: Text('AB+')),
+                  DropdownMenuItem(value: 'AB-', child: Text('AB-')),
+                  DropdownMenuItem(value: 'O+', child: Text('O+')),
+                  DropdownMenuItem(value: 'O-', child: Text('O-')),
+                ],
+                onChanged: (value) => setState(() => _bloodGroup = value),
+              ),
+              _ProfileField(
+                label: "Contact d'urgence",
+                controller: _emergencyController,
+                keyboardType: TextInputType.phone,
+              ),
+              _ProfileField(
+                label: 'Allergies connues',
+                controller: _allergiesController,
+                maxLines: 3,
+              ),
+            ],
             Align(
               alignment: Alignment.centerLeft,
               child: FilledButton(
@@ -2699,8 +3477,14 @@ class _ProfilePageState extends State<_ProfilePage> {
         const SizedBox(height: 26),
         _ProfileSection(
           title: 'Sécurité',
-          description: 'Changez votre mot de passe.',
+          description:
+              'Changez votre mot de passe avec votre mot de passe actuel.',
           children: [
+            _ProfileField(
+              label: 'Mot de passe actuel',
+              controller: _currentPasswordController,
+              obscureText: true,
+            ),
             _ProfileField(
               label: 'Nouveau mot de passe',
               controller: _newPasswordController,
@@ -2795,18 +3579,24 @@ class _ProfileField extends StatelessWidget {
   const _ProfileField({
     required this.label,
     required this.controller,
-    this.enabled = true,
     this.hintText,
     this.obscureText = false,
     this.keyboardType,
+    this.readOnly = false,
+    this.onTap,
+    this.suffixIcon,
+    this.maxLines = 1,
   });
 
   final String label;
   final TextEditingController controller;
-  final bool enabled;
   final String? hintText;
   final bool obscureText;
   final TextInputType? keyboardType;
+  final bool readOnly;
+  final VoidCallback? onTap;
+  final IconData? suffixIcon;
+  final int maxLines;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -2825,13 +3615,16 @@ class _ProfileField extends StatelessWidget {
         const SizedBox(height: 8),
         TextField(
           controller: controller,
-          enabled: enabled,
           obscureText: obscureText,
           keyboardType: keyboardType,
+          readOnly: readOnly,
+          onTap: onTap,
+          maxLines: maxLines,
           decoration: InputDecoration(
             hintText: hintText,
+            suffixIcon: suffixIcon == null ? null : Icon(suffixIcon),
             filled: true,
-            fillColor: enabled ? Colors.white : const Color(0xFFF5F7F7),
+            fillColor: Colors.white,
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 18,
               vertical: 16,
@@ -2857,3 +3650,12 @@ class _ProfileField extends StatelessWidget {
 
 String _appointmentDate(Map<String, dynamic> item) =>
     item['date_heure']?.toString() ?? item['date']?.toString() ?? '';
+
+bool _isTodayAppointment(Map<String, dynamic> item) {
+  final date = DateTime.tryParse(_appointmentDate(item));
+  if (date == null) return false;
+  final today = DateTime.now();
+  return date.year == today.year &&
+      date.month == today.month &&
+      date.day == today.day;
+}

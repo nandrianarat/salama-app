@@ -29,11 +29,13 @@ class _AuthSession {
     required this.token,
     required this.role,
     required this.name,
+    this.patientId,
   });
 
   final String token;
   final String role;
   final String name;
+  final String? patientId;
 }
 
 void main() => runApp(const SalamaApp());
@@ -51,6 +53,15 @@ class SalamaApp extends StatelessWidget {
         themeMode: themeMode,
         theme: hadTheme(),
         darkTheme: _darkTheme,
+        builder: (context, child) {
+          final mediaQuery = MediaQuery.of(context);
+          return MediaQuery(
+            data: mediaQuery.copyWith(
+              textScaler: const TextScaler.linear(0.92),
+            ),
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
         home: const AuthGate(),
       ),
     );
@@ -97,8 +108,14 @@ class _AuthGateState extends State<AuthGate> {
             await _secureStorage.read(key: _roleKey) ??
             'patient';
         final name = user['nom'] as String? ?? 'Administrateur';
+        final patientId = user['patient_id']?.toString();
         await _secureStorage.write(key: _roleKey, value: role);
-        return _AuthSession(token: token, role: role, name: name);
+        return _AuthSession(
+          token: token,
+          role: role,
+          name: name,
+          patientId: patientId,
+        );
       }
     } catch (_) {
       final role = await _secureStorage.read(key: _roleKey) ?? 'patient';
@@ -126,6 +143,7 @@ class _AuthGateState extends State<AuthGate> {
                 token: session.token,
                 role: session.role,
                 displayName: session.name,
+                patientId: session.patientId,
               );
       },
     );

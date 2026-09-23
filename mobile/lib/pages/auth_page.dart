@@ -268,10 +268,20 @@ class _LoginPageState extends State<LoginPage> {
           ),
         );
       } else {
+        String? detail;
+        try {
+          detail =
+              (jsonDecode(response.body) as Map<String, dynamic>)['detail']
+                  as String?;
+        } catch (_) {
+          detail = null;
+        }
         setState(
-          () => _error = response.statusCode == 409
-              ? 'Cet identifiant est déjà utilisé.'
-              : 'Inscription impossible. Vérifiez les informations.',
+          () => _error =
+              detail ??
+              (response.statusCode == 409
+                  ? 'Cet identifiant est déjà utilisé.'
+                  : 'Inscription impossible. Vérifiez les informations.'),
         );
       }
     } catch (_) {
@@ -341,6 +351,8 @@ class _LoginPageState extends State<LoginPage> {
             builder: (_) => HomePage(
               token: data['access_token'] as String,
               role: role,
+              patientId: (data['user'] as Map<String, dynamic>?)?['patient_id']
+                  ?.toString(),
               displayName:
                   (data['user'] as Map<String, dynamic>?)?['nom'] as String? ??
                   'Administrateur',

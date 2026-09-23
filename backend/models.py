@@ -15,6 +15,7 @@ class Personnel(Base):
     numero_ordre = Column(String(50))
     login = Column(String(100), unique=True, nullable=False)
     mot_de_passe_hash = Column(String(255), nullable=False)
+    patient_id = Column(String(36), ForeignKey("patient.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -22,6 +23,20 @@ class Personnel(Base):
     is_deleted = Column(Boolean, default=False)
 
     consultations = relationship("Consultation", back_populates="personnel")
+    patient = relationship("Patient", foreign_keys=[patient_id], uselist=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    actor_id = Column(String(36), nullable=False)
+    action = Column(String(100), nullable=False)
+    target_type = Column(String(50), nullable=False)
+    target_id = Column(String(36), nullable=True)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 
 
 class Patient(Base):
@@ -37,6 +52,7 @@ class Patient(Base):
     groupe_sanguin = Column(String(20), nullable=True)
     allergies = Column(Text, nullable=True)
     contact_urgence = Column(String(30), nullable=True)
+    medecin_id = Column(String(36), ForeignKey("personnel.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -55,8 +71,11 @@ class Consultation(Base):
     date = Column(DateTime(timezone=True), server_default=func.now())
     lieu = Column(String(20), nullable=False, default="Cabinet")
     motif = Column(String(255), nullable=True)
+    temperature = Column(String(20), nullable=True)
+    tension_arterielle = Column(String(20), nullable=True)
     diagnostic = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+    statut = Column(String(20), nullable=False, default="en_cours")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -1,10 +1,16 @@
 part of '../main.dart';
 
 class ConsultationsFeaturePage extends StatelessWidget {
-  const ConsultationsFeaturePage({super.key, required this.token});
+  const ConsultationsFeaturePage({
+    super.key,
+    required this.token,
+    this.canCreate = true,
+  });
   final String token;
+  final bool canCreate;
   @override
-  Widget build(BuildContext context) => ConsultationsPage(token: token);
+  Widget build(BuildContext context) =>
+      ConsultationsPage(token: token, canCreate: canCreate);
 }
 
 class ConsultationFormPage extends StatelessWidget {
@@ -21,8 +27,13 @@ class ConsultationFormPage extends StatelessWidget {
 }
 
 class ConsultationsPage extends StatefulWidget {
-  const ConsultationsPage({super.key, required this.token});
+  const ConsultationsPage({
+    super.key,
+    required this.token,
+    this.canCreate = true,
+  });
   final String token;
+  final bool canCreate;
   @override
   State<ConsultationsPage> createState() => _ConsultationsPageState();
 }
@@ -71,7 +82,10 @@ class _ConsultationsPageState extends State<ConsultationsPage> {
       return consultations;
     } catch (_) {
       final local = await LocalDatabase.instance.getConsultations();
-      if (local.isNotEmpty) return local;
+      final synced = local
+          .where((item) => item['sync_status'] == 'synced')
+          .toList();
+      if (synced.isNotEmpty) return synced;
       rethrow;
     }
   }
@@ -91,13 +105,6 @@ class _ConsultationsPageState extends State<ConsultationsPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: _AdminColors.background,
-    floatingActionButton: FloatingActionButton.extended(
-      onPressed: _create,
-      backgroundColor: _AdminColors.teal,
-      foregroundColor: Colors.white,
-      icon: const Icon(Icons.add_rounded),
-      label: const Text('Nouvelle consultation'),
-    ),
     body: SafeArea(
       child: RefreshIndicator(
         onRefresh: () async => setState(() => _future = _load()),
@@ -120,7 +127,7 @@ class _ConsultationsPageState extends State<ConsultationsPage> {
                 .where((item) => _consultationLocation(item) == 'Domicile')
                 .length;
             return ListView(
-              padding: const EdgeInsets.fromLTRB(18, 24, 18, 100),
+              padding: const EdgeInsets.fromLTRB(18, 24, 18, 32),
               children: [
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -184,6 +191,21 @@ class _ConsultationsPageState extends State<ConsultationsPage> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 22),
+                if (widget.canCreate)
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _create,
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('Nouvelle consultation'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(50),
+                        backgroundColor: _AdminColors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 22),
                 const Text(
                   'Lieu de prise en charge',
@@ -563,6 +585,8 @@ class NewConsultationPage extends StatefulWidget {
 class _NewConsultationPageState extends State<NewConsultationPage> {
   final _formKey = GlobalKey<FormState>();
   final _motifController = TextEditingController();
+  final _temperatureController = TextEditingController();
+  final _tensionController = TextEditingController();
   final _diagnosticController = TextEditingController();
   final _notesController = TextEditingController();
   late Future<List<Map<String, dynamic>>> _patientsFuture;
@@ -573,13 +597,39 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
   @override
   void initState() {
     super.initState();
-    _patientsFuture = LocalDatabase.instance.getPatients();
+    _patientsFuture = _loadPatients();
     _patientId = widget.initialPatientId;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadPatients() async {
+    try {
+      final response = await http.get(
+        Uri.parse('${_LoginPageState._apiBaseUrl}/api/v1/patients'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode != 200) {
+        throw Exception('Erreur de chargement des patients');
+      }
+      final patients = (jsonDecode(response.body) as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      for (final patient in patients) {
+        await LocalDatabase.instance.savePatient(patient);
+      }
+      return patients;
+    } catch (_) {
+      final local = await LocalDatabase.instance.getPatients();
+      return local
+          .where((patient) => patient['sync_status'] == 'synced')
+          .toList();
+    }
   }
 
   @override
   void dispose() {
     _motifController.dispose();
+    _temperatureController.dispose();
+    _tensionController.dispose();
     _diagnosticController.dispose();
     _notesController.dispose();
     super.dispose();
@@ -587,43 +637,36 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate() || _patientId == null) return;
-    final now = DateTime.now().toUtc().toIso8601String();
-    final id = const Uuid().v4();
     final payload = <String, dynamic>{
-      'id': id,
       'patient_id': _patientId,
-      'date': now,
       'motif': _motifController.text.trim(),
       'lieu': _location,
+      'temperature': _temperatureController.text.trim().isEmpty
+          ? null
+          : _temperatureController.text.trim(),
+      'tension_arterielle': _tensionController.text.trim().isEmpty
+          ? null
+          : _tensionController.text.trim(),
       'diagnostic': _diagnosticController.text.trim().isEmpty
           ? null
           : _diagnosticController.text.trim(),
       'notes': 'Lieu: $_location\n${_notesController.text.trim()}'.trim(),
-      'sync_status': 'pending',
-      'created_at': now,
-      'updated_at': now,
-      'is_deleted': false,
     };
     setState(() => _saving = true);
     try {
-      final operationId = await LocalDatabase.instance.addPendingOperation(
-        entity: 'consultation',
-        entityId: id,
-        operation: 'upsert',
-        payload: payload,
+      final response = await http.post(
+        Uri.parse('${_LoginPageState._apiBaseUrl}/api/v1/consultations'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(payload),
       );
-      try {
-        await LocalDatabase.instance.saveConsultation(payload);
-        try {
-          await SyncService(
-            baseUrl: _LoginPageState._apiBaseUrl,
-            token: widget.token,
-          ).syncPendingConsultations();
-        } catch (_) {}
-      } catch (_) {
-        await LocalDatabase.instance.removePendingOperation(operationId);
-        rethrow;
+      if (response.statusCode != 201) {
+        throw Exception('HTTP ${response.statusCode}: ${response.body}');
       }
+      final saved = jsonDecode(response.body) as Map<String, dynamic>;
+      await LocalDatabase.instance.saveConsultation(saved);
       if (mounted) {
         Navigator.pop(context, true);
       }
@@ -638,15 +681,38 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
     }
   }
 
+  Widget _formLabel(String label) => Padding(
+    padding: const EdgeInsets.only(top: 18, bottom: 8),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: _AdminColors.text,
+        fontSize: 15,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  String? _validateTemperature(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) return null;
+    final temperature = double.tryParse(text.replaceAll(',', '.'));
+    return temperature == null || temperature < 25 || temperature > 45
+        ? 'Valeur entre 25 et 45 °C'
+        : null;
+  }
+
+  String? _validateBloodPressure(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty) return null;
+    return RegExp(r'^\d{2,3}\s*/\s*\d{2,3}$').hasMatch(text)
+        ? null
+        : 'Format attendu : 120/80';
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: _AdminColors.background,
-    appBar: AppBar(
-      title: const Text('Nouvelle consultation'),
-      backgroundColor: _AdminColors.background,
-      foregroundColor: _AdminColors.text,
-      elevation: 0,
-    ),
     body: FutureBuilder<List<Map<String, dynamic>>>(
       future: _patientsFuture,
       builder: (context, snapshot) {
@@ -666,56 +732,50 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
         return Form(
           key: _formKey,
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 32),
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 32),
             children: [
-              const Text(
-                'Nouvelle consultation',
-                style: TextStyle(
-                  color: _AdminColors.text,
-                  fontSize: 30,
-                  fontWeight: FontWeight.w900,
+              Container(
+                padding: const EdgeInsets.fromLTRB(22, 24, 22, 26),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: _AdminColors.border),
                 ),
-              ),
-              const SizedBox(height: 7),
-              const Text(
-                'Renseignez les informations de la visite et du suivi clinique.',
-                style: TextStyle(color: _AdminColors.muted, fontSize: 15),
-              ),
-              const SizedBox(height: 22),
-              _FormCard(
-                title: 'Informations de la visite',
-                children: [
-                  const Text(
-                    'Lieu de consultation',
-                    style: TextStyle(
-                      color: _AdminColors.text,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Rova · Gestion médicale',
+                      style: TextStyle(color: _AdminColors.muted, fontSize: 14),
                     ),
-                  ),
-                  const SizedBox(height: 9),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(
-                        value: 'Cabinet',
-                        label: Text('Cabinet'),
-                        icon: Icon(Icons.local_hospital_outlined),
+                    const SizedBox(height: 22),
+                    const Text(
+                      'Nouvelle consultation',
+                      style: TextStyle(
+                        color: _AdminColors.text,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w500,
+                        height: 1.15,
                       ),
-                      ButtonSegment(
-                        value: 'Domicile',
-                        label: Text('Domicile'),
-                        icon: Icon(Icons.home_outlined),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Renseignez les informations nécessaires pour continuer.',
+                      style: TextStyle(
+                        color: _AdminColors.muted,
+                        fontSize: 15,
+                        height: 1.4,
                       ),
-                    ],
-                    selected: {_location},
-                    onSelectionChanged: (value) =>
-                        setState(() => _location = value.first),
-                  ),
-                  _RovaField(
-                    label: 'Patient *',
-                    child: DropdownButtonFormField<String>(
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Divider(color: _AdminColors.border),
+                    ),
+                    _formLabel('Patient'),
+                    DropdownButtonFormField<String>(
                       initialValue: _patientId,
                       decoration: const InputDecoration(
+                        hintText: 'Rechercher un patient',
                         prefixIcon: Icon(Icons.person_outline),
                       ),
                       items: patients
@@ -732,12 +792,63 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
                       validator: (value) =>
                           value == null ? 'Sélectionnez un patient' : null,
                     ),
-                  ),
-                  _RovaField(
-                    label: 'Motif *',
-                    child: TextFormField(
+                    _formLabel('Lieu de consultation'),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                          value: 'Cabinet',
+                          label: Text('Cabinet'),
+                          icon: Icon(Icons.local_hospital_outlined),
+                        ),
+                        ButtonSegment(
+                          value: 'Domicile',
+                          label: Text('Domicile'),
+                          icon: Icon(Icons.home_outlined),
+                        ),
+                      ],
+                      selected: {_location},
+                      onSelectionChanged: (value) =>
+                          setState(() => _location = value.first),
+                    ),
+                    _formLabel('Constantes vitales'),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            controller: _temperatureController,
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            decoration: const InputDecoration(
+                              labelText: 'Température',
+                              hintText: '37,0 °C',
+                              prefixIcon: Icon(Icons.thermostat_outlined),
+                            ),
+                            validator: _validateTemperature,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _tensionController,
+                            keyboardType: TextInputType.text,
+                            decoration: const InputDecoration(
+                              labelText: 'Tension artérielle',
+                              hintText: '120/80 mmHg',
+                              prefixIcon: Icon(Icons.favorite_border),
+                            ),
+                            validator: _validateBloodPressure,
+                          ),
+                        ),
+                      ],
+                    ),
+                    _formLabel('Motif / détails'),
+                    TextFormField(
                       controller: _motifController,
+                      maxLines: 3,
                       decoration: const InputDecoration(
+                        hintText: 'Décrivez le motif...',
                         prefixIcon: Icon(Icons.help_outline_rounded),
                       ),
                       validator: (value) =>
@@ -745,124 +856,76 @@ class _NewConsultationPageState extends State<NewConsultationPage> {
                           ? 'Le motif est obligatoire'
                           : null,
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              _FormCard(
-                title: 'Évaluation clinique',
-                children: [
-                  _RovaField(
-                    label: 'Diagnostic',
-                    child: TextFormField(
+                    _formLabel('Diagnostic'),
+                    TextFormField(
                       controller: _diagnosticController,
-                      minLines: 3,
-                      maxLines: 5,
+                      minLines: 2,
+                      maxLines: 4,
                       decoration: const InputDecoration(
+                        hintText: 'Diagnostic de la consultation',
                         prefixIcon: Icon(Icons.monitor_heart_outlined),
                       ),
                     ),
-                  ),
-                  _RovaField(
-                    label: 'Notes et plan de suivi',
-                    child: TextFormField(
+                    _formLabel('Notes et plan de suivi'),
+                    TextFormField(
                       controller: _notesController,
-                      minLines: 4,
-                      maxLines: 8,
+                      minLines: 3,
+                      maxLines: 6,
                       decoration: const InputDecoration(
                         hintText:
                             'Recommandations, traitement, prochaine étape...',
                         prefixIcon: Icon(Icons.notes_outlined),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 22),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _saving ? null : _save,
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.save_rounded),
-                  label: Text(
-                    _saving
-                        ? 'Enregistrement...'
-                        : 'Enregistrer la consultation',
-                  ),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 22),
+                      child: Divider(color: _AdminColors.border),
+                    ),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _saving ? null : _save,
+                        icon: _saving
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.add),
+                        label: Text(
+                          _saving ? 'Enregistrement...' : 'Enregistrer',
+                        ),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(50),
+                          backgroundColor: _AdminColors.teal,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: _saving
+                            ? null
+                            : () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _AdminColors.teal,
+                          backgroundColor: _AdminColors.tealSoft,
+                          side: BorderSide.none,
+                          minimumSize: const Size.fromHeight(50),
+                        ),
+                        child: const Text('Annuler'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         );
       },
-    ),
-  );
-}
-
-class _FormCard extends StatelessWidget {
-  const _FormCard({required this.title, required this.children});
-  final String title;
-  final List<Widget> children;
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: _AdminColors.border),
-      boxShadow: const [
-        BoxShadow(
-          color: Color(0x1206273A),
-          blurRadius: 4,
-          offset: Offset(0, 2),
-        ),
-      ],
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: _AdminColors.text,
-            fontSize: 19,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-        const SizedBox(height: 18),
-        ...children,
-      ],
-    ),
-  );
-}
-
-class _RovaField extends StatelessWidget {
-  const _RovaField({required this.label, required this.child});
-  final String label;
-  final Widget child;
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 15),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: _AdminColors.text,
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 8),
-        child,
-      ],
     ),
   );
 }

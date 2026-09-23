@@ -4,22 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:service_sante_mobile/main.dart';
 
 void main() {
-  testWidgets('Rova affiche la nouvelle interface de connexion', (
+  testWidgets('affiche la page de connexion actuelle de Rova', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const MaterialApp(home: LoginPage()));
 
-    expect(find.text('HaD FRANCE'), findsOneWidget);
-    expect(find.text('Être soigné à la maison.'), findsOneWidget);
-    expect(find.text('Connexion'), findsOneWidget);
-    expect(find.text('Créer un compte'), findsOneWidget);
-    expect(find.text('Mot de passe oublié ?'), findsOneWidget);
-    expect(
-      find.byTooltip('Afficher ou masquer le mot de passe'),
-      findsOneWidget,
-    );
-    expect(find.text('Se connecter'), findsOneWidget);
-    expect(find.text('Rova Santé'), findsNothing);
+    expect(find.text('Bienvenue chez Rova'), findsOneWidget);
+    expect(find.text('Se connecter'), findsWidgets);
+    expect(find.text('Créer un compte'), findsWidgets);
+    expect(find.text('Mot de passe oublié ?'), findsWidgets);
+    expect(find.text('Rova.'), findsWidgets);
   });
 
   testWidgets('affiche le message pour un mot de passe trop court', (
@@ -29,7 +23,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField).at(0), 'patient');
     await tester.enterText(find.byType(TextField).at(1), '12345');
-    await tester.tap(find.text('Se connecter'));
+    await tester.tap(find.text('Se connecter').last);
     await tester.pump();
 
     expect(
@@ -45,7 +39,7 @@ void main() {
   ) async {
     await tester.pumpWidget(const MaterialApp(home: LoginPage()));
 
-    await tester.tap(find.text('Se connecter'));
+    await tester.tap(find.text('Se connecter').last);
     await tester.pump();
     expect(
       find.text(
@@ -55,7 +49,7 @@ void main() {
     );
 
     await tester.enterText(find.byType(TextField).at(0), 'patient');
-    await tester.tap(find.text('Se connecter'));
+    await tester.tap(find.text('Se connecter').last);
     await tester.pump();
     expect(find.text('Veuillez ajouter votre mot de passe'), findsOneWidget);
   });
@@ -64,7 +58,7 @@ void main() {
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const MaterialApp(home: LoginPage()));
-    await tester.tap(find.text('Créer un compte'));
+    await tester.tap(find.text('Créer un compte').last);
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).at(0), 'Aminata Diallo');
@@ -82,5 +76,37 @@ void main() {
     await tester.pump();
 
     expect(find.text('Les mots de passe ne correspondent pas'), findsOneWidget);
+  });
+
+  testWidgets('préremplit les champs du formulaire en mode édition patient', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PatientFormPage(
+          token: 'demo-token',
+          patient: {
+            'id': '11111111-1111-4111-8111-111111111111',
+            'nom': 'Diallo',
+            'prenom': 'Aminata',
+            'telephone': '+221771234567',
+            'adresse': 'Dakar',
+            'date_naissance': '1995-04-12',
+            'sexe': 'F',
+            'groupe_sanguin': 'O+',
+            'allergies': 'Pénicilline',
+            'contact_urgence': '+221778765432',
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('Modifier le patient'), findsAtLeastNWidgets(1));
+
+    final fields = tester.widgetList<TextFormField>(find.byType(TextFormField));
+    final values = fields.map((field) => field.controller?.text).toList();
+    expect(values, contains('Diallo'));
+    expect(values, contains('Aminata'));
+    expect(values, contains('Dakar'));
   });
 }

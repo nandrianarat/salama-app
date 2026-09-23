@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from database import get_db
-from dependencies import get_current_user, normalize_uuid
+from dependencies import get_current_user, normalize_uuid, require_medical_access
 from models import Consultation, Patient, Personnel
 from schemas import ConsultationCreate, ConsultationOut, ConsultationSync, ConsultationUpdate
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/v1", tags=["consultations"])
 def list_consultations(
     patient_id: UUID | None = None,
     db: Session = Depends(get_db),
-    current_user: Personnel = Depends(get_current_user),
+    current_user: Personnel = Depends(require_medical_access),
 ):
     del current_user
     query = db.query(Consultation).filter(Consultation.is_deleted == False)
@@ -31,7 +31,7 @@ def list_consultations(
 def create_consultation(
     consultation_data: ConsultationCreate,
     db: Session = Depends(get_db),
-    current_user: Personnel = Depends(get_current_user),
+    current_user: Personnel = Depends(require_medical_access),
 ):
     patient = db.query(Patient).filter(Patient.id == consultation_data.patient_id, Patient.is_deleted == False).first()
     if not patient:
@@ -39,7 +39,10 @@ def create_consultation(
     consultation = Consultation(
         patient_id=normalize_uuid(consultation_data.patient_id),
         medecin_id=normalize_uuid(current_user.id),
+        lieu=consultation_data.lieu,
         motif=consultation_data.motif,
+        temperature=consultation_data.temperature,
+        tension_arterielle=consultation_data.tension_arterielle,
         diagnostic=consultation_data.diagnostic,
         notes=consultation_data.notes,
     )
@@ -53,7 +56,7 @@ def create_consultation(
 def sync_consultation(
     consultation_data: ConsultationSync,
     db: Session = Depends(get_db),
-    current_user: Personnel = Depends(get_current_user),
+    current_user: Personnel = Depends(require_medical_access),
 ):
     patient_id = normalize_uuid(consultation_data.patient_id)
     if not db.query(Patient).filter(Patient.id == patient_id, Patient.is_deleted == False).first():
@@ -65,7 +68,10 @@ def sync_consultation(
             patient_id=patient_id,
             medecin_id=normalize_uuid(current_user.id),
             date=consultation_data.date,
+            lieu=consultation_data.lieu,
             motif=consultation_data.motif,
+            temperature=consultation_data.temperature,
+            tension_arterielle=consultation_data.tension_arterielle,
             diagnostic=consultation_data.diagnostic,
             notes=consultation_data.notes,
         )
@@ -85,7 +91,7 @@ def sync_consultation(
 
 
 @router.put("/consultations/{consultation_id}", response_model=ConsultationOut)
-def update_consultation(consultation_id: UUID, consultation_data: ConsultationUpdate, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def update_consultation(consultation_id: UUID, consultation_data: ConsultationUpdate, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     del current_user
     consultation = db.query(Consultation).filter(Consultation.id == consultation_id, Consultation.is_deleted == False).first()
     if not consultation:
@@ -100,7 +106,7 @@ def update_consultation(consultation_id: UUID, consultation_data: ConsultationUp
 
 
 @router.delete("/consultations/{consultation_id}")
-def delete_consultation(consultation_id: UUID, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def delete_consultation(consultation_id: UUID, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     del current_user
     consultation = db.query(Consultation).filter(Consultation.id == consultation_id, Consultation.is_deleted == False).first()
     if not consultation:

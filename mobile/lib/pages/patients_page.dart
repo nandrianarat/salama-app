@@ -14,21 +14,30 @@ class PatientsFeaturePage extends StatelessWidget {
 }
 
 class PatientFormPage extends StatelessWidget {
-  const PatientFormPage({super.key, required this.token, this.patient});
+  const PatientFormPage({
+    super.key,
+    required this.token,
+    this.patient,
+    this.role,
+  });
 
   final String token;
   final Map<String, dynamic>? patient;
+  final String? role;
 
   @override
   Widget build(BuildContext context) =>
-      _PatientFormScreen(token: token, patient: patient);
+      _PatientFormScreen(token: token, patient: patient, role: role);
 }
 
 class _PatientFormScreen extends StatefulWidget {
-  const _PatientFormScreen({required this.token, this.patient});
+  const _PatientFormScreen({required this.token, this.patient, this.role});
 
   final String token;
   final Map<String, dynamic>? patient;
+  final String? role;
+
+  bool get isAdministrativeOnly => role?.toLowerCase() == 'secretaire';
 
   @override
   State<_PatientFormScreen> createState() => _PatientFormScreenState();
@@ -36,26 +45,48 @@ class _PatientFormScreen extends StatefulWidget {
 
 class _PatientFormScreenState extends State<_PatientFormScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nom = TextEditingController();
   final _prenom = TextEditingController();
   final _telephone = TextEditingController();
   final _adresse = TextEditingController();
   final _allergies = TextEditingController();
   final _urgence = TextEditingController();
+  final _login = TextEditingController();
+  final _password = TextEditingController();
   DateTime? _dateNaissance;
   String? _sexe;
   String? _groupeSanguin;
   bool _saving = false;
 
+  bool get _isEditing => widget.patient != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final patient = widget.patient;
+    if (patient == null) return;
+    _prenom.text = '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'.trim();
+    _telephone.text = (patient['telephone'] ?? '').toString();
+    _adresse.text = (patient['adresse'] ?? '').toString();
+    _allergies.text = (patient['allergies'] ?? '').toString();
+    _urgence.text = (patient['contact_urgence'] ?? '').toString();
+    _sexe = patient['sexe']?.toString();
+    _groupeSanguin = patient['groupe_sanguin']?.toString();
+    final dateValue = patient['date_naissance']?.toString();
+    if (dateValue != null && dateValue.isNotEmpty) {
+      _dateNaissance = DateTime.tryParse(dateValue);
+    }
+  }
+
   @override
   void dispose() {
     for (final controller in [
-      _nom,
       _prenom,
       _telephone,
       _adresse,
       _allergies,
       _urgence,
+      _login,
+      _password,
     ]) {
       controller.dispose();
     }
@@ -67,53 +98,89 @@ class _PatientFormScreenState extends State<_PatientFormScreen> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    final now = DateTime.now().toUtc().toIso8601String();
-    final id = widget.patient?['id']?.toString() ?? const Uuid().v4();
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final navigator = Navigator.of(context);
+
+    final patientId = widget.patient?['id']?.toString() ?? const Uuid().v4();
+    final fullName = _prenom.text.trim();
+    final nameParts = fullName.split(RegExp(r'\s+'));
+    final lastName = nameParts.length > 1 ? nameParts.removeLast() : fullName;
     final payload = <String, dynamic>{
-      'id': id,
-      'nom': _nom.text.trim(),
-      'prenom': _prenom.text.trim(),
+      'nom': lastName,
+      'prenom': nameParts.join(' ').trim().isEmpty
+          ? lastName
+          : nameParts.join(' ').trim(),
       'telephone': _optional(_telephone.text),
       'date_naissance': _dateNaissance?.toIso8601String().substring(0, 10),
       'sexe': _sexe,
       'adresse': _optional(_adresse.text),
-      'groupe_sanguin': _groupeSanguin,
-      'allergies': _optional(_allergies.text),
       'contact_urgence': _optional(_urgence.text),
-      'created_at': now,
-      'updated_at': now,
-      'sync_status': widget.patient == null ? 'pending' : 'updated',
-      'is_deleted': false,
     };
+    if (!widget.isAdministrativeOnly) {
+      payload['groupe_sanguin'] = _groupeSanguin;
+      payload['allergies'] = _optional(_allergies.text);
+    }
+    if (!_isEditing) {
+      final login = _login.text.trim();
+      final password = _password.text;
+      if (login.length < 3 || password.length < 6) {
+        messenger?.showSnackBar(
+          const SnackBar(
+            content: Text('Identifiant et mot de passe patient obligatoires.'),
+          ),
+        );
+        return;
+      }
+      payload['login'] = login;
+      payload['mot_de_passe'] = password;
+    }
 
     setState(() => _saving = true);
-    setState(() => _saving = true);
     try {
-      final response = await http.request(
-        Uri.parse(
-          widget.patient == null
-              ? '${_LoginPageState._apiBaseUrl}/api/v1/patients'
-              : '${_LoginPageState._apiBaseUrl}/api/v1/patients/$id',
-        ),
-        widget.patient == null ? 'POST' : 'PUT',
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode(payload),
+      final isPatient = widget.role?.toLowerCase() == 'patient';
+      final uri = Uri.parse(
+        isPatient
+            ? '${_LoginPageState._apiBaseUrl}/api/v1/me/patient'
+            : '${_LoginPageState._apiBaseUrl}/api/v1/patients${_isEditing ? '/$patientId' : ''}',
       );
+      final response = await (_isEditing
+          ? http.put(
+              uri,
+              headers: {
+                'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode(payload),
+            )
+          : http.post(
+              uri,
+              headers: {
+                'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({...payload, 'id': patientId}),
+            ));
+
+      if (!mounted) return;
       if (response.statusCode == 200 || response.statusCode == 201) {
-        await LocalDatabase.instance.savePatient(
-          jsonDecode(response.body) as Map<String, dynamic>,
-        );
-      } else {
-        throw Exception('Erreur serveur (${response.statusCode})');
+        final responseBody = jsonDecode(response.body) as Map<String, dynamic>;
+        await LocalDatabase.instance.savePatient(responseBody);
+        if (mounted) navigator.pop(true);
+        return;
       }
-      if (mounted) Navigator.pop(context, true);
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Enregistrement impossible : $error')),
+
+      throw Exception('Erreur ${(response.statusCode)} : ${response.body}');
+    } catch (_) {
+      if (mounted && messenger != null) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              _isEditing
+                  ? 'Impossible de modifier le patient.'
+                  : 'Impossible d’ajouter le patient.',
+            ),
+          ),
         );
       }
     } finally {
@@ -126,153 +193,205 @@ class _PatientFormScreenState extends State<_PatientFormScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: _AdminColors.background,
-    appBar: AppBar(
-      title: Text(
-        widget.patient == null ? 'Nouveau patient' : 'Modifier le patient',
-      ),
-      backgroundColor: _AdminColors.background,
-      foregroundColor: _AdminColors.text,
-      elevation: 0,
-    ),
     body: Form(
       key: _formKey,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
-          const _FormIntro(
-            eyebrow: 'Dossier médical',
-            title: 'Nouveau patient',
-            description: 'Renseignez les informations essentielles du dossier.',
-          ),
-          const SizedBox(height: 24),
-          const _FormSectionTitle(
-            title: 'Identité',
-            subtitle: 'Les champs marqués d’un astérisque sont obligatoires.',
-          ),
-          _field(_nom, 'Nom *', Icons.badge_outlined, validator: _required),
-          _field(
-            _prenom,
-            'Prénom *',
-            Icons.person_outline,
-            validator: _required,
-          ),
-          _field(
-            _telephone,
-            'Téléphone',
-            Icons.phone_outlined,
-            keyboardType: TextInputType.phone,
-          ),
-          const SizedBox(height: 14),
-          InkWell(
-            onTap: () async {
-              final date = await showDatePicker(
-                context: context,
-                firstDate: DateTime(1900),
-                lastDate: DateTime.now(),
-                initialDate: _dateNaissance ?? DateTime(1990),
-              );
-              if (date != null) setState(() => _dateNaissance = date);
-            },
-            child: InputDecorator(
-              decoration: const InputDecoration(
-                labelText: 'Date de naissance',
-                prefixIcon: Icon(Icons.cake_outlined),
-              ),
-              child: Text(
-                _dateNaissance == null
-                    ? 'Sélectionner une date'
-                    : MaterialLocalizations.of(
-                        context,
-                      ).formatMediumDate(_dateNaissance!),
-              ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _AdminColors.border),
             ),
-          ),
-          const SizedBox(height: 14),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final fields = [
-                DropdownButtonFormField<String>(
-                  initialValue: _sexe,
-                  decoration: const InputDecoration(
-                    labelText: 'Sexe',
-                    prefixIcon: Icon(Icons.person_outline),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Rova · Gestion médicale',
+                  style: TextStyle(
+                    color: _AdminColors.muted,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'F', child: Text('Femme')),
-                    DropdownMenuItem(value: 'M', child: Text('Homme')),
-                    DropdownMenuItem(value: 'autre', child: Text('Autre')),
-                  ],
-                  onChanged: (value) => setState(() => _sexe = value),
                 ),
-                DropdownButtonFormField<String>(
-                  initialValue: _groupeSanguin,
-                  decoration: const InputDecoration(
-                    labelText: 'Groupe sanguin',
-                    prefixIcon: Icon(Icons.bloodtype_outlined),
+                const SizedBox(height: 22),
+                Text(
+                  _isEditing ? 'Modifier un patient' : 'Ajouter un patient',
+                  style: const TextStyle(
+                    color: _AdminColors.text,
+                    fontSize: 30,
+                    fontWeight: FontWeight.w500,
+                    height: 1.15,
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'A+', child: Text('A+')),
-                    DropdownMenuItem(value: 'A-', child: Text('A-')),
-                    DropdownMenuItem(value: 'B+', child: Text('B+')),
-                    DropdownMenuItem(value: 'B-', child: Text('B-')),
-                    DropdownMenuItem(value: 'AB+', child: Text('AB+')),
-                    DropdownMenuItem(value: 'AB-', child: Text('AB-')),
-                    DropdownMenuItem(value: 'O+', child: Text('O+')),
-                    DropdownMenuItem(value: 'O-', child: Text('O-')),
-                  ],
-                  onChanged: (value) => setState(() => _groupeSanguin = value),
                 ),
-              ];
-              return constraints.maxWidth < 430
-                  ? Column(
-                      children: [
-                        fields[0],
-                        const SizedBox(height: 14),
-                        fields[1],
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        Expanded(child: fields[0]),
-                        const SizedBox(width: 12),
-                        Expanded(child: fields[1]),
-                      ],
-                    );
-            },
-          ),
-          const SizedBox(height: 24),
-          const _FormSectionTitle(
-            title: 'Informations complémentaires',
-            subtitle: 'Facultatives, mais utiles au suivi médical.',
-          ),
-          _field(_adresse, 'Adresse', Icons.location_on_outlined, maxLines: 2),
-          _field(
-            _allergies,
-            'Allergies connues',
-            Icons.warning_amber_outlined,
-            maxLines: 2,
-          ),
-          _field(
-            _urgence,
-            'Contact d’urgence',
-            Icons.contact_phone_outlined,
-            keyboardType: TextInputType.phone,
-          ),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: _saving ? null : _save,
-            icon: _saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save_outlined),
-            label: Text(_saving ? 'Enregistrement...' : 'Enregistrer'),
+                const SizedBox(height: 10),
+                Text(
+                  _isEditing
+                      ? 'Mettez à jour les informations nécessaires.'
+                      : 'Renseignez les informations nécessaires pour continuer.',
+                  style: const TextStyle(
+                    color: _AdminColors.muted,
+                    fontSize: 15,
+                    height: 1.4,
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Divider(color: _AdminColors.border),
+                ),
+                _formLabel('Nom complet'),
+                _field(
+                  _prenom,
+                  'Ex. Miora Andrianina',
+                  Icons.person_outline,
+                  validator: _required,
+                ),
+                if (!_isEditing) ...[
+                  _formLabel('Identifiant du patient'),
+                  _field(
+                    _login,
+                    'Ex. tovo.rakoto',
+                    Icons.account_circle_outlined,
+                  ),
+                  _formLabel('Mot de passe temporaire'),
+                  _field(
+                    _password,
+                    '6 caractères minimum',
+                    Icons.lock_outline,
+                    obscureText: true,
+                  ),
+                ],
+                _formLabel('Téléphone'),
+                _field(
+                  _telephone,
+                  '+261 34 00 000 00',
+                  Icons.phone_outlined,
+                  keyboardType: TextInputType.phone,
+                ),
+                _formLabel('Date de naissance'),
+                _birthDateField(),
+                _formLabel('Adresse'),
+                _field(
+                  _adresse,
+                  'Ville, quartier',
+                  Icons.location_on_outlined,
+                  maxLines: 2,
+                ),
+                if (!widget.isAdministrativeOnly) ...[
+                  _formLabel('Groupe sanguin'),
+                  _bloodGroupField(),
+                ],
+                _formLabel("Contact d'urgence"),
+                _field(
+                  _urgence,
+                  'Nom et téléphone',
+                  Icons.contact_phone_outlined,
+                ),
+                if (!widget.isAdministrativeOnly) ...[
+                  _formLabel('Allergies connues'),
+                  _field(
+                    _allergies,
+                    'Aucune allergie connue',
+                    Icons.warning_amber_outlined,
+                    maxLines: 3,
+                  ),
+                ],
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Divider(color: _AdminColors.border),
+                ),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add),
+                    label: Text(_saving ? 'Enregistrement...' : 'Enregistrer'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _saving ? null : () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _AdminColors.teal,
+                      backgroundColor: _AdminColors.tealSoft,
+                      side: BorderSide.none,
+                      minimumSize: const Size.fromHeight(50),
+                    ),
+                    child: const Text('Annuler'),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     ),
+  );
+
+  Widget _formLabel(String label) => Padding(
+    padding: const EdgeInsets.only(bottom: 8, top: 10),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: _AdminColors.text,
+        fontSize: 15,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+
+  Widget _birthDateField() => InkWell(
+    onTap: () async {
+      final date = await showDatePicker(
+        context: context,
+        firstDate: DateTime(1900),
+        lastDate: DateTime.now(),
+        initialDate: _dateNaissance ?? DateTime(1990),
+      );
+      if (date != null) setState(() => _dateNaissance = date);
+    },
+    child: InputDecorator(
+      decoration: const InputDecoration(
+        hintText: 'jj/mm/aaaa',
+        suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
+      ),
+      child: Text(
+        _dateNaissance == null
+            ? 'jj/mm/aaaa'
+            : MaterialLocalizations.of(
+                context,
+              ).formatMediumDate(_dateNaissance!),
+      ),
+    ),
+  );
+
+  Widget _bloodGroupField() => DropdownButtonFormField<String>(
+    initialValue: _groupeSanguin,
+    decoration: const InputDecoration(hintText: 'Sélectionner'),
+    items: const [
+      DropdownMenuItem(value: 'A+', child: Text('A+')),
+      DropdownMenuItem(value: 'A-', child: Text('A-')),
+      DropdownMenuItem(value: 'B+', child: Text('B+')),
+      DropdownMenuItem(value: 'B-', child: Text('B-')),
+      DropdownMenuItem(value: 'AB+', child: Text('AB+')),
+      DropdownMenuItem(value: 'AB-', child: Text('AB-')),
+      DropdownMenuItem(value: 'O+', child: Text('O+')),
+      DropdownMenuItem(value: 'O-', child: Text('O-')),
+    ],
+    onChanged: (value) => setState(() => _groupeSanguin = value),
   );
 
   Widget _field(
@@ -282,6 +401,7 @@ class _PatientFormScreenState extends State<_PatientFormScreen> {
     String? Function(String?)? validator,
     TextInputType? keyboardType,
     int maxLines = 1,
+    bool obscureText = false,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 14),
     child: TextFormField(
@@ -289,15 +409,17 @@ class _PatientFormScreenState extends State<_PatientFormScreen> {
       validator: validator,
       keyboardType: keyboardType,
       maxLines: maxLines,
-      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
+      obscureText: obscureText,
+      decoration: InputDecoration(hintText: label, prefixIcon: Icon(icon)),
     ),
   );
 }
 
 class PatientsPage extends StatefulWidget {
-  const PatientsPage({super.key, required this.token});
+  const PatientsPage({super.key, required this.token, this.role});
 
   final String token;
+  final String? role;
 
   @override
   State<PatientsPage> createState() => _PatientsPageState();
@@ -306,31 +428,27 @@ class PatientsPage extends StatefulWidget {
 class _PatientsPageState extends State<PatientsPage> {
   late Future<List<Map<String, dynamic>>> _patientsFuture;
   final _searchController = TextEditingController();
+  Timer? _searchDebounce;
 
   @override
   void initState() {
     super.initState();
-    final patient = widget.patient;
-    if (patient != null) {
-      _nom.text = patient['nom']?.toString() ?? '';
-      _prenom.text = patient['prenom']?.toString() ?? '';
-      _telephone.text = patient['telephone']?.toString() ?? '';
-      _adresse.text = patient['adresse']?.toString() ?? '';
-      _allergies.text = patient['allergies']?.toString() ?? '';
-      _urgence.text = patient['contact_urgence']?.toString() ?? '';
-      _dateNaissance = DateTime.tryParse(
-        patient['date_naissance']?.toString() ?? '',
-      );
-      _sexe = patient['sexe']?.toString();
-      _groupeSanguin = patient['groupe_sanguin']?.toString();
-    }
     _patientsFuture = _loadPatients();
   }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _searchPatients(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      setState(() => _patientsFuture = _loadPatients(value));
+    });
   }
 
   Future<List<Map<String, dynamic>>> _loadPatients([String? search]) async {
@@ -353,6 +471,9 @@ class _PatientsPageState extends State<PatientsPage> {
       }
       final data = jsonDecode(response.body) as List<dynamic>;
       final patients = data.cast<Map<String, dynamic>>();
+      if (patients.isEmpty && (query == null || query.isEmpty)) {
+        await LocalDatabase.instance.clearAllData();
+      }
       for (final patient in patients) {
         await LocalDatabase.instance.savePatient(patient);
       }
@@ -361,6 +482,17 @@ class _PatientsPageState extends State<PatientsPage> {
       final localPatients = await LocalDatabase.instance.getPatients(
         search: query,
       );
+      if (widget.role?.toLowerCase() == 'patient') {
+        return const <Map<String, dynamic>>[];
+      }
+      if (widget.role?.toLowerCase() == 'secretaire') {
+        return localPatients.map((patient) {
+          final administrative = Map<String, dynamic>.from(patient)
+            ..remove('groupe_sanguin')
+            ..remove('allergies');
+          return administrative;
+        }).toList();
+      }
       if (localPatients.isNotEmpty) return localPatients;
       rethrow;
     }
@@ -377,19 +509,38 @@ class _PatientsPageState extends State<PatientsPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Patients',
-                      style: const TextStyle(
-                        color: _AdminColors.text,
-                        fontSize: 30,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ),
-                  FilledButton.icon(
+              const Text(
+                'Gestion médicale',
+                style: TextStyle(
+                  color: _AdminColors.muted,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Patients',
+                style: TextStyle(
+                  color: _AdminColors.text,
+                  fontSize: 32,
+                  fontWeight: FontWeight.w500,
+                  height: 1.1,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Gérez les dossiers et le suivi de vos patients.',
+                style: TextStyle(
+                  color: _AdminColors.muted,
+                  fontSize: 16,
+                  height: 1.45,
+                ),
+              ),
+              const SizedBox(height: 28),
+              if (widget.role?.toLowerCase() != 'patient')
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
                     onPressed: () async {
                       final created = await Navigator.push<bool>(
                         context,
@@ -401,20 +552,42 @@ class _PatientsPageState extends State<PatientsPage> {
                         setState(() => _patientsFuture = _loadPatients());
                       }
                     },
-                    icon: const Icon(Icons.person_add_alt_1_rounded),
-                    label: const Text('Nouveau'),
+                    icon: const Icon(Icons.add, size: 24),
+                    label: const Text('Ajouter un patient'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                      backgroundColor: _AdminColors.teal,
+                      foregroundColor: Colors.white,
+                      textStyle: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 18),
+                ),
+              const SizedBox(height: 42),
               TextField(
                 controller: _searchController,
                 textInputAction: TextInputAction.search,
-                onSubmitted: (value) =>
-                    setState(() => _patientsFuture = _loadPatients(value)),
+                onChanged: _searchPatients,
+                onSubmitted: (value) {
+                  _searchDebounce?.cancel();
+                  setState(() => _patientsFuture = _loadPatients(value));
+                },
                 decoration: InputDecoration(
-                  hintText: 'Rechercher un patient',
+                  hintText: 'Rechercher un patient...',
                   prefixIcon: const Icon(Icons.search_rounded),
+                  filled: true,
+                  fillColor: Colors.white,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: _AdminColors.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: _AdminColors.border),
+                  ),
                   suffixIcon: IconButton(
                     tooltip: 'Effacer la recherche',
                     onPressed: () {
@@ -425,7 +598,31 @@ class _PatientsPageState extends State<PatientsPage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
+              Container(
+                height: 52,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _AdminColors.border),
+                ),
+                child: const Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Tous les patients',
+                        style: TextStyle(
+                          color: _AdminColors.muted,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    Icon(Icons.chevron_right, color: _AdminColors.muted),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 28),
               FutureBuilder<List<Map<String, dynamic>>>(
                 future: _patientsFuture,
                 builder: (context, snapshot) {
@@ -470,96 +667,39 @@ class _PatientsPageState extends State<PatientsPage> {
                     );
                   }
 
-                  return Column(
-                    children: [
-                      for (final patient in patients)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Card(
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(16),
-                              onTap: () => Navigator.push(
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: _AdminColors.border),
+                    ),
+                    child: Column(
+                      children: [
+                        for (var index = 0; index < patients.length; index++)
+                          _PatientCompactTile(
+                            patient: patients[index],
+                            showDivider: index < patients.length - 1,
+                            onTap: () async {
+                              final refreshed = await Navigator.push(
                                 context,
                                 MaterialPageRoute(
                                   builder: (_) => PatientRecordPage(
-                                    patient: patient,
+                                    patient: patients[index],
                                     token: widget.token,
+                                    role: widget.role,
                                   ),
                                 ),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(16),
-                                child: Row(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 28,
-                                      backgroundColor: HadColors.sageSoft,
-                                      child: Text(
-                                        _patientInitials(patient),
-                                        style: const TextStyle(
-                                          color: HadColors.ink,
-                                          fontWeight: FontWeight.w800,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 14),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'
-                                                .trim(),
-                                            style: const TextStyle(
-                                              fontSize: 17,
-                                              fontWeight: FontWeight.w800,
-                                              color: HadColors.ink,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            patient['telephone']?.toString() ??
-                                                'Téléphone non renseigné',
-                                            style: const TextStyle(
-                                              color: HadColors.inkSoft,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Wrap(
-                                            spacing: 8,
-                                            runSpacing: 6,
-                                            children: [
-                                              _InfoPill(
-                                                label: 'Sexe',
-                                                value:
-                                                    (patient['sexe'] ??
-                                                            'Non défini')
-                                                        .toString(),
-                                              ),
-                                              _InfoPill(
-                                                label: 'Naissance',
-                                                value: _formatDate(
-                                                  patient['date_naissance'],
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const Icon(
-                                      Icons.chevron_right_rounded,
-                                      color: HadColors.inkSoft,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+                              );
+                              if (refreshed == true && mounted) {
+                                setState(
+                                  () => _patientsFuture = _loadPatients(),
+                                );
+                              }
+                            },
                           ),
-                        ),
-                    ],
+                      ],
+                    ),
                   );
                 },
               ),
@@ -569,25 +709,127 @@ class _PatientsPageState extends State<PatientsPage> {
       ),
     );
   }
+}
 
-  String _patientInitials(Map<String, dynamic> patient) {
-    final parts = [
-      patient['prenom']?.toString() ?? '',
-      patient['nom']?.toString() ?? '',
-    ].where((p) => p.trim().isNotEmpty).toList();
-    if (parts.isEmpty) return 'P';
-    return parts
-        .map((part) => part.trim().substring(0, 1).toUpperCase())
-        .take(2)
-        .join();
-  }
+class _PatientCompactTile extends StatelessWidget {
+  const _PatientCompactTile({
+    required this.patient,
+    required this.showDivider,
+    required this.onTap,
+  });
 
-  String _formatDate(Object? value) {
-    if (value == null || value.toString().isEmpty) return 'Non défini';
-    final date = DateTime.tryParse(value.toString());
-    if (date == null) return value.toString();
-    return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+  final Map<String, dynamic> patient;
+  final bool showDivider;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'.trim();
+    final age = _patientAge(patient['date_naissance']);
+    final summary = _patientSummary(patient);
+    return Column(
+      children: [
+        InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 25,
+                  backgroundColor: const Color(0xFFE4F3F4),
+                  child: Text(
+                    _compactInitials(patient),
+                    style: const TextStyle(
+                      color: _AdminColors.teal,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name.isEmpty ? 'Patient' : name,
+                        style: const TextStyle(
+                          color: _AdminColors.text,
+                          fontSize: 17,
+                          fontWeight: FontWeight.w800,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${age == null ? 'Âge non renseigné' : '$age ans'} ·',
+                        style: const TextStyle(
+                          color: _AdminColors.muted,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        summary,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _AdminColors.muted,
+                          fontSize: 14,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right,
+                  color: Color(0xFF9BAEB2),
+                  size: 25,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (showDivider) const Divider(height: 1, color: _AdminColors.border),
+      ],
+    );
   }
+}
+
+String _compactInitials(Map<String, dynamic> patient) {
+  final parts = [
+    patient['prenom']?.toString() ?? '',
+    patient['nom']?.toString() ?? '',
+  ].where((part) => part.trim().isNotEmpty).toList();
+  if (parts.isEmpty) return 'P';
+  return parts
+      .map((part) => part.trim().substring(0, 1).toUpperCase())
+      .take(2)
+      .join();
+}
+
+int? _patientAge(Object? value) {
+  if (value == null || value.toString().isEmpty) return null;
+  final birthDate = DateTime.tryParse(value.toString());
+  if (birthDate == null) return null;
+  final today = DateTime.now();
+  var age = today.year - birthDate.year;
+  if (today.month < birthDate.month ||
+      (today.month == birthDate.month && today.day < birthDate.day)) {
+    age--;
+  }
+  return age < 0 ? null : age;
+}
+
+String _patientSummary(Map<String, dynamic> patient) {
+  final allergies = patient['allergies']?.toString().trim() ?? '';
+  if (allergies.isNotEmpty) return allergies;
+  final bloodGroup = patient['groupe_sanguin']?.toString().trim() ?? '';
+  if (bloodGroup.isNotEmpty) return 'Groupe sanguin : $bloodGroup';
+  return 'Aucune allergie connue';
 }
 
 class PatientDetailsPage extends StatelessWidget {
@@ -607,6 +849,7 @@ class PatientDetailsPage extends StatelessWidget {
       backgroundColor: _AdminColors.background,
       appBar: AppBar(
         title: const Text('Dossier patient'),
+        automaticallyImplyLeading: false,
         backgroundColor: _AdminColors.background,
         foregroundColor: _AdminColors.text,
         elevation: 0,
@@ -776,30 +1019,122 @@ class PatientRecordPage extends StatefulWidget {
     super.key,
     required this.patient,
     required this.token,
+    this.role,
   });
 
   final Map<String, dynamic> patient;
   final String token;
+  final String? role;
+
+  bool get hasClinicalAccess =>
+      role?.toLowerCase() == 'medecin' ||
+      role?.toLowerCase() == 'infirmier' ||
+      role?.toLowerCase() == 'patient';
 
   @override
   State<PatientRecordPage> createState() => _PatientRecordPageState();
 }
 
 class _PatientRecordPageState extends State<PatientRecordPage> {
-  late Future<List<Map<String, dynamic>>> _historyFuture;
+  late Future<_PatientRecordData> _recordFuture;
 
   @override
   void initState() {
     super.initState();
-    _historyFuture = _loadHistory();
+    _recordFuture = _loadRecord();
   }
 
-  Future<List<Map<String, dynamic>>> _loadHistory() async {
-    final records = await LocalDatabase.instance.getConsultations();
-    final id = widget.patient['id']?.toString();
-    return records
+  Future<_PatientRecordData> _loadRecord() async {
+    final id = widget.patient['id']?.toString() ?? '';
+    final appointments = (await LocalDatabase.instance.getRendezVous())
         .where((record) => record['patient_id']?.toString() == id)
         .toList();
+    final consultations = widget.hasClinicalAccess
+        ? await _loadOwnConsultations(id)
+        : const <Map<String, dynamic>>[];
+    final prescriptions =
+        widget.role?.toLowerCase() == 'medecin' ||
+            widget.role?.toLowerCase() == 'patient'
+        ? await _loadOwnPrescriptions(id)
+        : const <Map<String, dynamic>>[];
+    return _PatientRecordData(
+      consultations: consultations,
+      appointments: appointments,
+      prescriptions: prescriptions,
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _loadOwnConsultations(String id) async {
+    if (widget.role?.toLowerCase() != 'patient') {
+      return (await LocalDatabase.instance.getConsultations())
+          .where((record) => record['patient_id']?.toString() == id)
+          .toList();
+    }
+    final response = await http.get(
+      Uri.parse('${_LoginPageState._apiBaseUrl}/api/v1/consultations'),
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Historique indisponible');
+    }
+    final records = (jsonDecode(response.body) as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    for (final record in records) {
+      await LocalDatabase.instance.saveConsultation(record);
+    }
+    return records;
+  }
+
+  Future<List<Map<String, dynamic>>> _loadOwnPrescriptions(String id) async {
+    if (widget.role?.toLowerCase() != 'patient') {
+      return (await LocalDatabase.instance.getOrdonnances())
+          .where((record) => record['patient_id']?.toString() == id)
+          .toList();
+    }
+    final response = await http.get(
+      Uri.parse('${_LoginPageState._apiBaseUrl}/api/v1/ordonnances'),
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Ordonnances indisponibles');
+    }
+    final records = (jsonDecode(response.body) as List<dynamic>)
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    return records;
+  }
+
+  Future<void> _editPatient() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PatientFormPage(
+          token: widget.token,
+          patient: widget.patient,
+          role: widget.role,
+        ),
+      ),
+    );
+    if (updated == true && mounted) setState(() {});
+  }
+
+  void _newConsultation() {
+    if (widget.role?.toLowerCase() != 'medecin' &&
+        widget.role?.toLowerCase() != 'infirmier') {
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ConsultationFormPage(
+          token: widget.token,
+          initialPatientId: widget.patient['id']?.toString(),
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() => _recordFuture = _loadRecord());
+    });
   }
 
   @override
@@ -808,121 +1143,102 @@ class _PatientRecordPageState extends State<PatientRecordPage> {
     final name = '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'.trim();
     return Scaffold(
       backgroundColor: _AdminColors.background,
-      appBar: AppBar(
-        title: const Text('Dossier patient'),
-        backgroundColor: _AdminColors.background,
-        foregroundColor: _AdminColors.text,
-        elevation: 0,
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(18, 12, 18, 32),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _AdminColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 30,
-                      backgroundColor: _AdminColors.tealSoft,
-                      child: Text(
-                        _recordInitials(patient),
-                        style: const TextStyle(
-                          color: _AdminColors.teal,
-                          fontWeight: FontWeight.w800,
-                          fontSize: 18,
+      body: FutureBuilder<_PatientRecordData>(
+        future: _recordFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final data = snapshot.data ?? const _PatientRecordData.empty();
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 32),
+            children: [
+              const SizedBox(height: 8),
+              CircleAvatar(
+                radius: 46,
+                backgroundColor: _AdminColors.teal,
+                child: Text(
+                  _recordInitials(patient),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'Dossier patient',
+                style: TextStyle(color: _AdminColors.muted, fontSize: 15),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                name,
+                style: const TextStyle(
+                  color: _AdminColors.text,
+                  fontSize: 29,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${_patientAge(patient['date_naissance']) ?? 'Âge non renseigné'} ans · Patiente depuis janvier 2025',
+                style: const TextStyle(color: _AdminColors.muted, fontSize: 16),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _editPatient,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: _AdminColors.tealSoft,
+                        foregroundColor: _AdminColors.teal,
+                        minimumSize: const Size.fromHeight(74),
+                      ),
+                      child: const Text('Modifier'),
+                    ),
+                  ),
+                  if (widget.role?.toLowerCase() == 'medecin' ||
+                      widget.role?.toLowerCase() == 'infirmier') ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: FilledButton.icon(
+                        onPressed: _newConsultation,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Nouvelle consultation'),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(74),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name,
-                            style: const TextStyle(
-                              color: _AdminColors.text,
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Dossier médical et suivi clinique',
-                            style: TextStyle(color: _AdminColors.muted),
-                          ),
-                        ],
-                      ),
-                    ),
                   ],
-                ),
-                const SizedBox(height: 20),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _RecordPill(
-                      icon: Icons.phone_outlined,
-                      value:
-                          patient['telephone']?.toString() ??
-                          'Téléphone non renseigné',
-                    ),
-                    _RecordPill(
-                      icon: Icons.bloodtype_outlined,
-                      value:
-                          patient['groupe_sanguin']?.toString() ??
-                          'Groupe non renseigné',
-                    ),
-                    _RecordPill(
-                      icon: Icons.person_outline,
-                      value: patient['sexe']?.toString() ?? 'Sexe non défini',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                _RecordLine(
-                  label: 'Adresse',
-                  value: patient['adresse']?.toString() ?? 'Non renseignée',
-                  icon: Icons.location_on_outlined,
-                ),
-                _RecordLine(
-                  label: 'Allergies',
-                  value: patient['allergies']?.toString() ?? 'Aucune connue',
-                  icon: Icons.warning_amber_outlined,
+                ],
+              ),
+              const SizedBox(height: 36),
+              _PersonalInfoCard(
+                patient: patient,
+                showClinical: widget.hasClinicalAccess,
+              ),
+              const SizedBox(height: 26),
+              _UpcomingAppointmentCard(
+                appointments: data.appointments,
+                context: context,
+              ),
+              if (widget.hasClinicalAccess) ...[
+                const SizedBox(height: 26),
+                _ConsultationHistoryCard(
+                  consultations: data.consultations,
+                  context: context,
                 ),
               ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ConsultationFormPage(
-                        token: widget.token,
-                        initialPatientId: patient['id']?.toString(),
-                      ),
-                    ),
-                  ),
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text('Consultation'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => Navigator.push(
+              if (widget.role?.toLowerCase() == 'medecin') ...[
+                const SizedBox(height: 26),
+                _RecentPrescriptionsCard(
+                  prescriptions: data.prescriptions,
+                  context: context,
+                  onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
                       builder: (_) => PrescriptionsPage(
@@ -931,66 +1247,380 @@ class _PatientRecordPageState extends State<PatientRecordPage> {
                       ),
                     ),
                   ),
-                  icon: const Icon(Icons.receipt_long_outlined),
-                  label: const Text('Ordonnances'),
                 ),
-              ),
+              ],
             ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PatientRecordData {
+  const _PatientRecordData({
+    required this.consultations,
+    required this.appointments,
+    required this.prescriptions,
+  });
+
+  const _PatientRecordData.empty()
+    : consultations = const [],
+      appointments = const [],
+      prescriptions = const [];
+
+  final List<Map<String, dynamic>> consultations;
+  final List<Map<String, dynamic>> appointments;
+  final List<Map<String, dynamic>> prescriptions;
+}
+
+class _PersonalInfoCard extends StatelessWidget {
+  const _PersonalInfoCard({required this.patient, required this.showClinical});
+
+  final Map<String, dynamic> patient;
+  final bool showClinical;
+
+  @override
+  Widget build(BuildContext context) => _RecordSection(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Informations personnelles', style: _RecordTitle.style),
+        const SizedBox(height: 30),
+        _ProfileValue(
+          label: 'Date de naissance',
+          value: _formatRecordDate(patient['date_naissance']),
+        ),
+        _ProfileValue(
+          label: 'Téléphone',
+          value: patient['telephone']?.toString() ?? 'Non renseigné',
+        ),
+        _ProfileValue(
+          label: 'Adresse',
+          value: patient['adresse']?.toString() ?? 'Non renseignée',
+        ),
+        if (showClinical)
+          _ProfileValue(
+            label: 'Groupe sanguin',
+            value: _bloodGroupLabel(patient['groupe_sanguin']),
           ),
-          const SizedBox(height: 24),
-          const Text(
-            'Historique des consultations',
-            style: TextStyle(
-              color: _AdminColors.text,
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
+        if (showClinical)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEAF8F8),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFB9E5E5)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.favorite_border, color: _AdminColors.teal),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Allergies connues',
+                        style: TextStyle(
+                          color: _AdminColors.teal,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        patient['allergies']?.toString().trim().isNotEmpty ==
+                                true
+                            ? patient['allergies'].toString()
+                            : 'Aucune allergie\nrenseignée',
+                        style: const TextStyle(
+                          color: _AdminColors.muted,
+                          fontSize: 16,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 12),
-          FutureBuilder<List<Map<String, dynamic>>>(
-            future: _historyFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              final history = snapshot.data ?? const <Map<String, dynamic>>[];
-              if (history.isEmpty) return const _PatientRecordEmpty();
-              return Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: _AdminColors.border),
-                ),
-                child: Column(
-                  children: history.map((record) {
-                    final date = DateTime.tryParse(
-                      record['date']?.toString() ?? '',
-                    );
-                    return ListTile(
-                      leading: const CircleAvatar(
-                        backgroundColor: _AdminColors.tealSoft,
-                        child: Icon(
-                          Icons.medical_information_outlined,
-                          color: _AdminColors.teal,
-                        ),
+      ],
+    ),
+  );
+}
+
+class _ProfileValue extends StatelessWidget {
+  const _ProfileValue({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(color: _AdminColors.muted, fontSize: 15),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          value,
+          style: const TextStyle(
+            color: _AdminColors.text,
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _RecordSection extends StatelessWidget {
+  const _RecordSection({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(22),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: _AdminColors.border),
+    ),
+    child: child,
+  );
+}
+
+class _RecordTitle {
+  static const style = TextStyle(
+    color: _AdminColors.text,
+    fontSize: 20,
+    fontWeight: FontWeight.w500,
+  );
+}
+
+class _UpcomingAppointmentCard extends StatelessWidget {
+  const _UpcomingAppointmentCard({
+    required this.appointments,
+    required this.context,
+  });
+
+  final List<Map<String, dynamic>> appointments;
+  final BuildContext context;
+
+  @override
+  Widget build(BuildContext _) {
+    final upcoming = appointments.where((item) {
+      final status = item['statut']?.toString().toLowerCase() ?? '';
+      return status != 'annule' && status != 'annulé' && status != 'termine';
+    }).toList();
+    final appointment = upcoming.isEmpty ? null : upcoming.first;
+    final date = appointment == null
+        ? null
+        : DateTime.tryParse(appointment['date_heure']?.toString() ?? '');
+    return _RecordSection(
+      child: appointment == null
+          ? const _EmptyRecordSection(
+              title: 'Rendez-vous à venir',
+              subtitle: 'Aucun rendez-vous programmé.',
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Rendez-vous à venir',
+                        style: _RecordTitle.style,
                       ),
-                      title: Text(
-                        record['motif']?.toString() ?? 'Consultation',
+                    ),
+                    _RecordStatus(
+                      label: appointment['statut']?.toString() ?? 'Confirmé',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  appointment['motif']?.toString() ?? 'Consultation',
+                  style: const TextStyle(
+                    color: _AdminColors.muted,
+                    fontSize: 16,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                Row(
+                  children: [
+                    Text(
+                      date == null ? '--' : '${date.day}',
+                      style: const TextStyle(
+                        color: _AdminColors.teal,
+                        fontSize: 46,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      date == null
+                          ? 'Date non renseignée'
+                          : _recordMonthYear(date),
+                      style: const TextStyle(
+                        color: _AdminColors.muted,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(width: 18),
+                    Container(height: 70, width: 1, color: _AdminColors.border),
+                    const SizedBox(width: 18),
+                    Expanded(
+                      child: Text(
+                        date == null
+                            ? 'Heure non renseignée'
+                            : '${TimeOfDay.fromDateTime(date).format(context)} · ${appointment['motif'] ?? 'Consultation'}',
                         style: const TextStyle(
                           color: _AdminColors.text,
+                          fontSize: 16,
                           fontWeight: FontWeight.w700,
+                          height: 1.35,
                         ),
                       ),
-                      subtitle: Text(
-                        '${date == null ? 'Date non renseignée' : MaterialLocalizations.of(context).formatFullDate(date)} · ${_recordLocation(record)}',
-                        style: const TextStyle(color: _AdminColors.muted),
-                      ),
-                    );
-                  }).toList(),
+                    ),
+                  ],
                 ),
-              );
-            },
+              ],
+            ),
+    );
+  }
+}
+
+class _ConsultationHistoryCard extends StatelessWidget {
+  const _ConsultationHistoryCard({
+    required this.consultations,
+    required this.context,
+  });
+
+  final List<Map<String, dynamic>> consultations;
+  final BuildContext context;
+
+  @override
+  Widget build(BuildContext _) => _RecordSection(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Historique des consultations',
+                style: _RecordTitle.style,
+              ),
+            ),
+            Text(
+              'Voir tout',
+              style: TextStyle(
+                color: _AdminColors.teal,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            SizedBox(width: 8),
+            Icon(Icons.chevron_right, color: _AdminColors.teal),
+          ],
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'Les dernières consultations',
+          style: TextStyle(color: _AdminColors.muted, fontSize: 16),
+        ),
+        const SizedBox(height: 18),
+        if (consultations.isEmpty)
+          const Text(
+            'Aucune consultation enregistrée.',
+            style: TextStyle(color: _AdminColors.muted, fontSize: 15),
+          )
+        else
+          for (
+            var index = 0;
+            index < consultations.length && index < 4;
+            index++
+          )
+            _TimelineItem(
+              record: consultations[index],
+              isLast: index == consultations.length - 1 || index == 3,
+              context: context,
+            ),
+      ],
+    ),
+  );
+}
+
+class _TimelineItem extends StatelessWidget {
+  const _TimelineItem({
+    required this.record,
+    required this.isLast,
+    required this.context,
+  });
+
+  final Map<String, dynamic> record;
+  final bool isLast;
+  final BuildContext context;
+
+  @override
+  Widget build(BuildContext _) {
+    final date = DateTime.tryParse(record['date']?.toString() ?? '');
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 28,
+            child: Column(
+              children: [
+                const Icon(Icons.circle, size: 12, color: _AdminColors.teal),
+                if (!isLast)
+                  Expanded(
+                    child: Container(width: 1, color: _AdminColors.tealSoft),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    record['motif']?.toString() ?? 'Consultation',
+                    style: const TextStyle(
+                      color: _AdminColors.text,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${date == null ? 'Date non renseignée' : MaterialLocalizations.of(context).formatFullDate(date)} · Dr. ${record['medecin_nom'] ?? ''}',
+                    style: const TextStyle(
+                      color: _AdminColors.muted,
+                      fontSize: 15,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
@@ -998,78 +1628,193 @@ class _PatientRecordPageState extends State<PatientRecordPage> {
   }
 }
 
-class _RecordPill extends StatelessWidget {
-  const _RecordPill({required this.icon, required this.value});
-  final IconData icon;
-  final String value;
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-    decoration: BoxDecoration(
-      color: _AdminColors.tealSoft,
-      borderRadius: BorderRadius.circular(999),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 16, color: _AdminColors.teal),
-        const SizedBox(width: 6),
-        Text(
-          value,
-          style: const TextStyle(
-            color: _AdminColors.text,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-class _RecordLine extends StatelessWidget {
-  const _RecordLine({
-    required this.label,
-    required this.value,
-    required this.icon,
+class _RecentPrescriptionsCard extends StatelessWidget {
+  const _RecentPrescriptionsCard({
+    required this.prescriptions,
+    required this.context,
+    required this.onTap,
   });
-  final String label;
-  final String value;
-  final IconData icon;
+
+  final List<Map<String, dynamic>> prescriptions;
+  final BuildContext context;
+  final VoidCallback onTap;
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 10),
-    child: Row(
+  Widget build(BuildContext _) => _RecordSection(
+    child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 18, color: _AdminColors.muted),
-        const SizedBox(width: 9),
-        Expanded(
-          child: Text(
-            '$label : $value',
-            style: const TextStyle(color: _AdminColors.muted, fontSize: 14),
-          ),
+        Row(
+          children: [
+            const Expanded(
+              child: Text('Ordonnances récentes', style: _RecordTitle.style),
+            ),
+            InkWell(
+              onTap: onTap,
+              child: const Row(
+                children: [
+                  Text(
+                    'Voir tout',
+                    style: TextStyle(
+                      color: _AdminColors.teal,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Icon(Icons.chevron_right, color: _AdminColors.teal),
+                ],
+              ),
+            ),
+          ],
         ),
+        const SizedBox(height: 10),
+        const Text(
+          'Documents médicaux',
+          style: TextStyle(color: _AdminColors.muted, fontSize: 16),
+        ),
+        const SizedBox(height: 14),
+        if (prescriptions.isEmpty)
+          const Text(
+            'Aucune ordonnance récente.',
+            style: TextStyle(color: _AdminColors.muted, fontSize: 15),
+          )
+        else
+          for (final prescription in prescriptions.take(3))
+            _PrescriptionSummary(prescription: prescription),
       ],
     ),
   );
 }
 
-class _PatientRecordEmpty extends StatelessWidget {
-  const _PatientRecordEmpty();
+class _PrescriptionSummary extends StatelessWidget {
+  const _PrescriptionSummary({required this.prescription});
+
+  final Map<String, dynamic> prescription;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = (prescription['lignes'] as List<dynamic>?) ?? const [];
+    final title = lines.isEmpty
+        ? 'Ordonnance médicale'
+        : (lines.first as Map<String, dynamic>)['medicament']?.toString() ??
+              'Traitement';
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: _AdminColors.border)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: _AdminColors.tealSoft,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.description_outlined,
+              color: _AdminColors.teal,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: _AdminColors.text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _formatRecordDate(prescription['date_emission']),
+                  style: const TextStyle(
+                    color: _AdminColors.muted,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.download_outlined, color: _AdminColors.muted),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyRecordSection extends StatelessWidget {
+  const _EmptyRecordSection({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(title, style: _RecordTitle.style),
+      const SizedBox(height: 12),
+      Text(subtitle, style: const TextStyle(color: _AdminColors.muted)),
+    ],
+  );
+}
+
+class _RecordStatus extends StatelessWidget {
+  const _RecordStatus({required this.label});
+
+  final String label;
+
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(22),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
     decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: _AdminColors.border),
+      color: const Color(0xFFE2F3EF),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: const Color(0xFFA8DCCC)),
     ),
-    child: const Text(
-      'Aucune consultation enregistrée pour ce patient.',
-      style: TextStyle(color: _AdminColors.muted),
+    child: Text(
+      label,
+      style: const TextStyle(color: Color(0xFF249B86), fontSize: 13),
     ),
   );
+}
+
+String _formatRecordDate(Object? value) {
+  if (value == null || value.toString().isEmpty) return 'Non renseignée';
+  final date = DateTime.tryParse(value.toString());
+  if (date == null) return value.toString();
+  return '${date.day} ${_recordMonth(date.month)} ${date.year}';
+}
+
+String _recordMonth(int month) => const [
+  '',
+  'janvier',
+  'février',
+  'mars',
+  'avril',
+  'mai',
+  'juin',
+  'juillet',
+  'août',
+  'septembre',
+  'octobre',
+  'novembre',
+  'décembre',
+][month.clamp(0, 12)];
+
+String _recordMonthYear(DateTime date) =>
+    '${_recordMonth(date.month).substring(0, 3).toUpperCase()}\n${date.year}';
+
+String _bloodGroupLabel(Object? value) {
+  final group = value?.toString().trim();
+  if (group == null || group.isEmpty) return 'Non renseigné';
+  return group == 'O+' ? 'O positif' : group;
 }
 
 String _recordInitials(Map<String, dynamic> patient) {
@@ -1078,13 +1823,6 @@ String _recordInitials(Map<String, dynamic> patient) {
       .map((value) => value.toString().trim()[0].toUpperCase())
       .take(2);
   return values.join();
-}
-
-String _recordLocation(Map<String, dynamic> record) {
-  if (record['lieu'] == 'Domicile') return 'Domicile';
-  return (record['notes']?.toString() ?? '').startsWith('Lieu: Domicile')
-      ? 'Domicile'
-      : 'Cabinet';
 }
 
 class _MetricTile extends StatelessWidget {
@@ -1139,31 +1877,6 @@ class _MetricTile extends StatelessWidget {
           ),
         ),
       ],
-    ),
-  );
-}
-
-class _InfoPill extends StatelessWidget {
-  const _InfoPill({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-    decoration: BoxDecoration(
-      color: HadColors.cream,
-      borderRadius: BorderRadius.circular(999),
-      border: Border.all(color: HadColors.border),
-    ),
-    child: Text(
-      '$label : $value',
-      style: const TextStyle(
-        fontSize: 10,
-        color: HadColors.ink,
-        fontWeight: FontWeight.w700,
-      ),
     ),
   );
 }
@@ -1333,6 +2046,7 @@ class _NewPatientPageState extends State<NewPatientPage> {
       backgroundColor: _AdminColors.background,
       appBar: AppBar(
         title: const Text('Nouveau patient'),
+        automaticallyImplyLeading: false,
         backgroundColor: _AdminColors.background,
         foregroundColor: _AdminColors.text,
         elevation: 0,
@@ -1501,7 +2215,14 @@ class _NewPatientPageState extends State<NewPatientPage> {
             ),
             if (_error != null) ...[
               const SizedBox(height: 14),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
+              Text(
+                _error!,
+                style: const TextStyle(
+                  color: _AdminColors.text,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
             ],
             const SizedBox(height: 24),
             FilledButton.icon(

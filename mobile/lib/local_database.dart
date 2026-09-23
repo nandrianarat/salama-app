@@ -15,7 +15,7 @@ class LocalDatabase {
     final path = join(await getDatabasesPath(), 'salama.db');
     _database = await openDatabase(
       path,
-      version: 3,
+      version: 5,
       onConfigure: (database) async {
         await database.execute('PRAGMA foreign_keys = ON');
       },
@@ -53,7 +53,10 @@ class LocalDatabase {
             id TEXT PRIMARY KEY, patient_id TEXT NOT NULL,
             medecin_id TEXT, date TEXT NOT NULL, motif TEXT NOT NULL,
             lieu TEXT NOT NULL DEFAULT 'Cabinet',
+            temperature TEXT,
+            tension_arterielle TEXT,
             diagnostic TEXT, notes TEXT,
+            statut TEXT NOT NULL DEFAULT 'en_cours',
             sync_status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             is_deleted INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +177,19 @@ class LocalDatabase {
             "ALTER TABLE consultations ADD COLUMN lieu TEXT NOT NULL DEFAULT 'Cabinet'",
           );
         }
+        if (oldVersion < 4) {
+          await database.execute(
+            'ALTER TABLE consultations ADD COLUMN temperature TEXT',
+          );
+          await database.execute(
+            'ALTER TABLE consultations ADD COLUMN tension_arterielle TEXT',
+          );
+        }
+        if (oldVersion < 5) {
+          await database.execute(
+            "ALTER TABLE consultations ADD COLUMN statut TEXT NOT NULL DEFAULT 'en_cours'",
+          );
+        }
       },
     );
     return _database!;
@@ -229,8 +245,11 @@ class LocalDatabase {
       'lieu':
           consultation['lieu'] ??
           _consultationLocationFromNotes(consultation['notes']),
+      'temperature': consultation['temperature'],
+      'tension_arterielle': consultation['tension_arterielle'],
       'diagnostic': consultation['diagnostic'],
       'notes': consultation['notes'],
+      'statut': consultation['statut'] ?? 'en_cours',
       'sync_status': consultation['sync_status'] ?? 'synced',
       'created_at':
           consultation['created_at'] ?? DateTime.now().toIso8601String(),
@@ -283,10 +302,26 @@ class LocalDatabase {
 
   Future<void> saveOrdonnance(Map<String, dynamic> ordonnance) async {
     final database = await this.database;
+    final consultationId = ordonnance['consultation_id']?.toString();
+    final patientId = ordonnance['patient_id']?.toString();
+    if (consultationId == null || patientId == null) return;
+
+    final consultationExists = await database.query(
+      'consultations',
+      where: 'id = ? AND is_deleted = 0',
+      whereArgs: [consultationId],
+    );
+    final patientExists = await database.query(
+      'patients',
+      where: 'id = ? AND is_deleted = 0',
+      whereArgs: [patientId],
+    );
+    if (consultationExists.isEmpty || patientExists.isEmpty) return;
+
     await database.insert('ordonnances', {
       'id': ordonnance['id'],
-      'consultation_id': ordonnance['consultation_id'],
-      'patient_id': ordonnance['patient_id'],
+      'consultation_id': consultationId,
+      'patient_id': patientId,
       'medecin_id': ordonnance['medecin_id'],
       'date_emission':
           ordonnance['date_emission'] ??
@@ -307,11 +342,27 @@ class LocalDatabase {
     List<Map<String, dynamic>> lines,
   ) async {
     final database = await this.database;
+    final consultationId = ordonnance['consultation_id']?.toString();
+    final patientId = ordonnance['patient_id']?.toString();
+    if (consultationId == null || patientId == null) return;
+
+    final consultationExists = await database.query(
+      'consultations',
+      where: 'id = ? AND is_deleted = 0',
+      whereArgs: [consultationId],
+    );
+    final patientExists = await database.query(
+      'patients',
+      where: 'id = ? AND is_deleted = 0',
+      whereArgs: [patientId],
+    );
+    if (consultationExists.isEmpty || patientExists.isEmpty) return;
+
     await database.transaction((transaction) async {
       await transaction.insert('ordonnances', {
         'id': ordonnance['id'],
-        'consultation_id': ordonnance['consultation_id'],
-        'patient_id': ordonnance['patient_id'],
+        'consultation_id': consultationId,
+        'patient_id': patientId,
         'medecin_id': ordonnance['medecin_id'],
         'date_emission': ordonnance['date_emission'],
         'instructions_generales': ordonnance['instructions_generales'],
@@ -396,6 +447,19 @@ class LocalDatabase {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  Future<void> clearAllData() async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.delete('pending_operations');
+      await transaction.delete('lignes_prescription');
+      await transaction.delete('ordonnances');
+      await transaction.delete('consultations');
+      await transaction.delete('rendez_vous');
+      await transaction.delete('patients');
+      await transaction.delete('personnel');
+    });
   }
 
   Future<void> debugDatabase() async {

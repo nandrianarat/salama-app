@@ -27,9 +27,16 @@ def list_rendezvous(patient_id: UUID | None = None, db: Session = Depends(get_db
 def create_rendezvous(rendezvous_data: RendezVousCreate, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
     if not db.query(Patient).filter(Patient.id == rendezvous_data.patient_id, Patient.is_deleted == False).first():
         raise HTTPException(status_code=404, detail="Patient introuvable")
+    doctor = db.query(Personnel).filter(
+        Personnel.id == rendezvous_data.medecin_id,
+        Personnel.role == "medecin",
+        Personnel.is_deleted == False,
+    ).first()
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Médecin introuvable")
     rendezvous = RendezVous(
         patient_id=normalize_uuid(rendezvous_data.patient_id),
-        medecin_id=normalize_uuid(current_user.id),
+        medecin_id=normalize_uuid(doctor.id),
         date_heure=rendezvous_data.date_heure,
         statut=rendezvous_data.statut,
         motif=rendezvous_data.motif,

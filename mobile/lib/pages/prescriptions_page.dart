@@ -36,11 +36,18 @@ class OrdonnancesPage extends StatefulWidget {
 
 class _OrdonnancesPageState extends State<OrdonnancesPage> {
   late Future<List<Map<String, dynamic>>> _future;
+  final _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _future = _load();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Map<String, String> get _headers => {
@@ -57,18 +64,29 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
                 : {'patient_id': widget.patientId!},
           );
       final response = await http.get(uri, headers: _headers);
-      if (response.statusCode != 200) throw Exception('Erreur de chargement');
-      final rawOrdonnances = (jsonDecode(response.body) as List<dynamic>)
-          .cast<Map<String, dynamic>>();
+      if (response.statusCode != 200) {
+        throw Exception('Erreur de chargement (${response.statusCode})');
+      }
+      final decodedOrdonnances = jsonDecode(response.body);
+      final ordonnanceValues = decodedOrdonnances is Map<String, dynamic>
+          ? decodedOrdonnances['data'] ?? decodedOrdonnances['items'] ?? []
+          : decodedOrdonnances;
+      final rawOrdonnances = ordonnanceValues is List
+          ? ordonnanceValues.whereType<Map<String, dynamic>>().toList()
+          : const <Map<String, dynamic>>[];
       final patientsResponse = await http.get(
         Uri.parse('${_LoginPageState._apiBaseUrl}/api/v1/patients'),
         headers: _headers,
       );
-      if (patientsResponse.statusCode != 200) {
-        throw Exception('Erreur de chargement des patients');
-      }
-      final patients = (jsonDecode(patientsResponse.body) as List<dynamic>)
-          .cast<Map<String, dynamic>>();
+      final decodedPatients = patientsResponse.statusCode == 200
+          ? jsonDecode(patientsResponse.body)
+          : const <dynamic>[];
+      final patientValues = decodedPatients is Map<String, dynamic>
+          ? decodedPatients['data'] ?? decodedPatients['items'] ?? []
+          : decodedPatients;
+      final patients = patientValues is List
+          ? patientValues.whereType<Map<String, dynamic>>().toList()
+          : const <Map<String, dynamic>>[];
       final patientsById = {
         for (final patient in patients) patient['id'].toString(): patient,
       };
@@ -93,7 +111,12 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
       }
       return ordonnances;
     } catch (_) {
-      final local = await LocalDatabase.instance.getOrdonnances();
+      List<Map<String, dynamic>> local;
+      try {
+        local = await LocalDatabase.instance.getOrdonnances();
+      } catch (_) {
+        local = const [];
+      }
       final filteredLocal = widget.patientId == null
           ? local
           : local
@@ -103,7 +126,12 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
                 )
                 .toList();
       if (filteredLocal.isNotEmpty || widget.patientId != null) {
-        final patients = await LocalDatabase.instance.getPatients();
+        List<Map<String, dynamic>> patients;
+        try {
+          patients = await LocalDatabase.instance.getPatients();
+        } catch (_) {
+          patients = const [];
+        }
         final patientsById = {
           for (final patient in patients) patient['id'].toString(): patient,
         };
@@ -121,7 +149,7 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
           };
         }).toList();
       }
-      rethrow;
+      return const <Map<String, dynamic>>[];
     }
   }
 
@@ -341,13 +369,6 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF3F8F8),
-      floatingActionButton: widget.canCreate
-          ? FloatingActionButton.extended(
-              onPressed: _create,
-              icon: const Icon(Icons.add),
-              label: const Text('Nouvelle'),
-            )
-          : null,
       body: FutureBuilder<List<Map<String, dynamic>>>(
         future: _future,
         builder: (context, snapshot) {
@@ -361,20 +382,29 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
           if (prescriptions.isEmpty) {
             return ListView(
               padding: const EdgeInsets.fromLTRB(20, 28, 20, 32),
-              children: const [
+              children: [
+                const Text(
+                  'Gestion médicale',
+                  style: TextStyle(color: Color(0xFF547080), fontSize: 15),
+                ),
+                const SizedBox(height: 12),
                 Text(
-                  'Mes ordonnances',
+                  widget.canCreate ? 'Ordonnances' : 'Mes ordonnances',
                   style: TextStyle(
                     color: Color(0xFF06263A),
-                    fontSize: 30,
-                    fontWeight: FontWeight.w900,
+                    fontSize: 32,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                SizedBox(height: 8),
-                Text(
+                const SizedBox(height: 8),
+                const Text(
                   'Vos prescriptions et traitements seront disponibles ici.',
                   style: TextStyle(color: Color(0xFF547080), fontSize: 16),
                 ),
+                if (widget.canCreate) ...[
+                  const SizedBox(height: 28),
+                  _NewPrescriptionButton(onPressed: _create),
+                ],
               ],
             );
           }
@@ -383,6 +413,11 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 28, 20, 32),
               children: [
+                const Text(
+                  'Documents médicaux',
+                  style: TextStyle(color: Color(0xFF547080), fontSize: 15),
+                ),
+                const SizedBox(height: 12),
                 Text(
                   widget.canCreate ? 'Ordonnances' : 'Mes ordonnances',
                   style: const TextStyle(
@@ -393,47 +428,207 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '${prescriptions.length} prescription(s) disponible(s)',
+                  'Créez, consultez et téléchargez vos ordonnances.',
                   style: const TextStyle(
                     color: Color(0xFF547080),
                     fontSize: 16,
                   ),
                 ),
-                const SizedBox(height: 20),
-                ...prescriptions.map((prescription) {
-                  final lines =
-                      (prescription['lignes'] as List<dynamic>? ?? []);
-                  final medicine = lines.isEmpty
-                      ? 'Aucun médicament'
-                      : (lines.first as Map<String, dynamic>)['medicament']
-                            .toString();
-                  final patient =
-                      (prescription['patient'] as Map<String, dynamic>?) ??
-                      <String, dynamic>{
-                        'nom': prescription['patient_nom'] ?? '',
-                        'prenom': prescription['patient_prenom'] ?? '',
-                      };
-                  final patientName =
-                      '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'
-                          .trim();
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFFD6E1E2)),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x1206273A),
-                          blurRadius: 4,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
+                if (widget.canCreate) ...[
+                  const SizedBox(height: 28),
+                  _NewPrescriptionButton(onPressed: _create),
+                ],
+                const SizedBox(height: 28),
+                TextField(
+                  controller: _searchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: 'Rechercher une ordonnance',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: IconButton(
+                      tooltip: 'Effacer la recherche',
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.close),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  height: 52,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFD6E1E2)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Toutes les dates',
+                          style: TextStyle(
+                            color: Color(0xFF547080),
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right, color: Color(0xFF547080)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 28),
+                ...prescriptions
+                    .where((prescription) {
+                      final query = _searchController.text.trim().toLowerCase();
+                      if (query.isEmpty) return true;
+                      final patient =
+                          '${prescription['patient_prenom'] ?? ''} ${prescription['patient_nom'] ?? ''}';
+                      final lines =
+                          (prescription['lignes'] as List<dynamic>? ?? [])
+                              .map(
+                                (line) => line is Map ? line['medicament'] : '',
+                              )
+                              .join(' ');
+                      return '$patient $lines'.toLowerCase().contains(query);
+                    })
+                    .map((prescription) {
+                      final lines =
+                          (prescription['lignes'] as List<dynamic>? ?? []);
+                      final medicine = lines.isEmpty
+                          ? 'Aucun médicament'
+                          : (lines.first as Map<String, dynamic>)['medicament']
+                                .toString();
+                      final patient =
+                          (prescription['patient'] as Map<String, dynamic>?) ??
+                          <String, dynamic>{
+                            'nom': prescription['patient_nom'] ?? '',
+                            'prenom': prescription['patient_prenom'] ?? '',
+                          };
+                      final patientName =
+                          '${patient['prenom'] ?? ''} ${patient['nom'] ?? ''}'
+                              .trim();
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFD6E1E2)),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x1206273A),
+                              blurRadius: 4,
+                              offset: Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 46,
+                              height: 46,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFE5F5F5),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Icon(
+                                Icons.description_outlined,
+                                color: Color(0xFF087F88),
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    medicine,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF06263A),
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    '$patientName · ${prescription['date_emission'] ?? ''}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF547080),
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 5),
+                                  Text(
+                                    'Médecin : ${prescription['medecin_nom'] ?? 'Médecin non renseigné'}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF547080),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE2F3EF),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          'Disponible',
+                                          style: TextStyle(
+                                            color: Color(0xFF249B86),
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      OutlinedButton.icon(
+                                        onPressed: () =>
+                                            _downloadAndShare(prescription),
+                                        icon: const Icon(
+                                          Icons.download_outlined,
+                                        ),
+                                        label: const Text('Télécharger'),
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(
+                                            0xFF087F88,
+                                          ),
+                                          side: const BorderSide(
+                                            color: Color(0xFFD6E1E2),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            PopupMenuButton<String>(
+                              onSelected: (value) {
+                                if (value == 'aperçu') _preview(prescription);
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'aperçu',
+                                  child: Text('Voir l’aperçu'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        /*
                         Row(
                           children: [
                             Container(
@@ -527,9 +722,9 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
                           ],
                         ),
                       ],
-                    ),
-                  );
-                }),
+                    ),*/
+                      );
+                    }),
               ],
             ),
           );
@@ -537,6 +732,28 @@ class _OrdonnancesPageState extends State<OrdonnancesPage> {
       ),
     );
   }
+}
+
+class _NewPrescriptionButton extends StatelessWidget {
+  const _NewPrescriptionButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    child: FilledButton.icon(
+      onPressed: onPressed,
+      icon: const Icon(Icons.add, size: 22),
+      label: const Text('Créer une ordonnance'),
+      style: FilledButton.styleFrom(
+        minimumSize: const Size.fromHeight(50),
+        backgroundColor: const Color(0xFF087F88),
+        foregroundColor: Colors.white,
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    ),
+  );
 }
 
 class NewPrescriptionPage extends StatefulWidget {
@@ -598,10 +815,16 @@ class _NewPrescriptionPageState extends State<NewPrescriptionPage> {
       'updated_at': now,
       'is_deleted': false,
     };
+    final consultation = (await LocalDatabase.instance.getConsultations())
+        .firstWhere(
+          (item) => item['id']?.toString() == _consultationId,
+          orElse: () => <String, dynamic>{},
+        );
     final payload = <String, dynamic>{
       'id': const Uuid().v4(),
       'consultation_id': _consultationId,
       'patient_id': _patientId,
+      'medecin_id': consultation['medecin_id']?.toString(),
       'date_emission': now.substring(0, 10),
       'instructions_generales': _instructions.text.trim(),
       'lignes': [line],
@@ -645,6 +868,7 @@ class _NewPrescriptionPageState extends State<NewPrescriptionPage> {
     backgroundColor: const Color(0xFFF3F8F8),
     appBar: AppBar(
       title: const Text('Nouvelle ordonnance'),
+      automaticallyImplyLeading: false,
       backgroundColor: const Color(0xFFF3F8F8),
       foregroundColor: const Color(0xFF06263A),
       elevation: 0,
@@ -873,6 +1097,7 @@ class PrescriptionPreviewPage extends StatelessWidget {
       backgroundColor: const Color(0xFFF3F8F8),
       appBar: AppBar(
         title: const Text('Aperçu ordonnance'),
+        automaticallyImplyLeading: false,
         backgroundColor: const Color(0xFFF3F8F8),
         foregroundColor: const Color(0xFF06263A),
         elevation: 0,

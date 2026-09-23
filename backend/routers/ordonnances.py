@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy.orm import Session
 
 from database import get_db
-from dependencies import get_current_user, normalize_uuid
+from dependencies import get_current_user, normalize_uuid, require_medical_access
 from models import Consultation, LignePrescription, Ordonnance, Patient, Personnel
 from schemas import OrdonnanceCreate, OrdonnanceOut, OrdonnanceSync
 
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["ordonnances"])
 
 
 @router.get("/ordonnances", response_model=list[OrdonnanceOut])
-def list_ordonnances(patient_id: UUID | None = None, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def list_ordonnances(patient_id: UUID | None = None, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     del current_user
     query = db.query(Ordonnance).filter(Ordonnance.is_deleted == False)
     if patient_id:
@@ -29,7 +29,7 @@ def list_ordonnances(patient_id: UUID | None = None, db: Session = Depends(get_d
 
 
 @router.post("/ordonnances", response_model=OrdonnanceOut, status_code=status.HTTP_201_CREATED)
-def create_ordonnance(ordonnance_data: OrdonnanceCreate, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def create_ordonnance(ordonnance_data: OrdonnanceCreate, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     consultation = db.query(Consultation).filter(Consultation.id == ordonnance_data.consultation_id, Consultation.is_deleted == False).first()
     if not consultation:
         raise HTTPException(status_code=404, detail="Consultation introuvable")
@@ -50,7 +50,7 @@ def create_ordonnance(ordonnance_data: OrdonnanceCreate, db: Session = Depends(g
 
 
 @router.post("/sync/ordonnances", response_model=OrdonnanceOut)
-def sync_ordonnance(ordonnance_data: OrdonnanceSync, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def sync_ordonnance(ordonnance_data: OrdonnanceSync, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     consultation_id = normalize_uuid(ordonnance_data.consultation_id)
     consultation = db.query(Consultation).filter(Consultation.id == consultation_id, Consultation.is_deleted == False).first()
     if not consultation:
@@ -75,7 +75,7 @@ def sync_ordonnance(ordonnance_data: OrdonnanceSync, db: Session = Depends(get_d
 
 
 @router.get("/ordonnances/{ordonnance_id}/pdf")
-def ordonnance_pdf(ordonnance_id: UUID, db: Session = Depends(get_db), current_user: Personnel = Depends(get_current_user)):
+def ordonnance_pdf(ordonnance_id: UUID, db: Session = Depends(get_db), current_user: Personnel = Depends(require_medical_access)):
     ordonnance = db.query(Ordonnance).filter(Ordonnance.id == ordonnance_id, Ordonnance.is_deleted == False).first()
     if not ordonnance:
         raise HTTPException(status_code=404, detail="Ordonnance introuvable")

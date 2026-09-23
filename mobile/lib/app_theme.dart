@@ -102,5 +102,7 @@ ThemeData hadTheme() {
         borderSide: const BorderSide(color: HadColors.clay, width: 1.4),
       ),
     ),
+    visualDensity: VisualDensity.standard,
+    materialTapTargetSize: MaterialTapTargetSize.padded,
   );
 }
